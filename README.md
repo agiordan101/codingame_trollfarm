@@ -4,13 +4,19 @@ Spring Challenge 2026
 
 # Versions
 
+## v3 - Chop warrior & Chop scaler
+
+League: Bronze (max)
+<!-- Last moment in arena: 75/477 -->
+First moment in arena: 50/477
+
 ## v2 - Third troll is a big chopper
 
 League: Bronze (max)
-Last moment in arena: -
+Last moment in arena: 75/477
 First moment in arena: 60/430
 
-## v1 - Third troll is a big chopper
+## v1 - Create farms and harvest
 
 1. Generate a second troll as soon as possible (first turn generally)
 2. Havest as needed to create a third troll, with attributes specifically to chop trees like a boss
