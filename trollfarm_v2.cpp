@@ -6,12 +6,21 @@
 #include <set>
 
 /*
-    Vide coding v5
-
     Game plan :
-        1. Generate a second troll as soon as possible (first turn generally)
-        2. Havest as needed to create a third troll, with attributes specifically to chop trees like a boss
-        3. Then focus on chopping enemy trees, while keeping 1/2 trolls harvesting fruits
+        1. Generate a second troll first turn 
+        2. Choose one as the choppingWarrior and the other asthe  choppingScaler
+        3. Behave as follows :
+            Both :
+                - If an enemy is chopping a tree and I can reach it before he finishes, do it (when at least one slot is empty)
+            choppingWarrior :
+                - Chop the closest tree to the enemy shack
+                - Return to my shack when carry capacity is full
+                choppingScaler :
+                - Pick any fruit in my shack
+                - If an enemy can steal the wood before I finish harvest it :
+                - Go away from it
+                - Else plant it and harvest it
+                - Return to my shack immediately after planting
 
     Création de 3 trolls :
         1 -> Harvester : (1, 1, 1, 1)
@@ -29,9 +38,6 @@
 
     Plant:
         Si shack <= 3 ou (shack <= 6 && wetCell)
-
-    Anytime :
-        - Si un enemy chop un tree et que je peux l'atteindre avant qu'il ait fini -> Le faire (lorsqu'au moins un slot est vide)
 */
 
 using namespace std;
