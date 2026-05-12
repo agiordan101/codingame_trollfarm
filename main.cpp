@@ -51,7 +51,8 @@ const int MAX_TURNS = 300;
 // POSITION
 // =====================================================
 
-class Position {
+class Position
+{
 public:
     int x = -1;
     int y = -1;
@@ -61,11 +62,13 @@ public:
 // GLOBAL HELPERS
 // =====================================================
 
-int manhattan(int x1, int y1, int x2, int y2) {
+int manhattan(int x1, int y1, int x2, int y2)
+{
     return abs(x1 - x2) + abs(y1 - y2);
 }
 
-void emitAction(vector<string>& actions, const string& action) {
+void emitAction(vector<string> &actions, const string &action)
+{
     cerr << "[ACTION] " << action << endl;
     actions.push_back(action);
 }
@@ -74,7 +77,8 @@ void emitAction(vector<string>& actions, const string& action) {
 // TREE
 // =====================================================
 
-class Tree {
+class Tree
+{
 public:
     string type;
     int x, y;
@@ -88,7 +92,8 @@ public:
 // SHACK RESOURCES
 // =====================================================
 
-class ShackResources {
+class ShackResources
+{
 public:
     int plum, lemon, apple, banana, iron, wood;
 };
@@ -97,7 +102,8 @@ public:
 // TROLL
 // =====================================================
 
-class Troll {
+class Troll
+{
 public:
     int id;
     int player;
@@ -116,119 +122,77 @@ public:
     int carryIron;
     int carryWood;
 
-    int carried() const {
+    int carried() const
+    {
         return carryPlum + carryLemon + carryApple +
                carryBanana + carryIron + carryWood;
     }
 
-    void handleReturn(const Position& shack,
-                      vector<string>& actions) const
+    bool isCarrying() const
     {
-        if (manhattan(x,y,shack.x,shack.y) == 1) {
+        return carried() > 0;
+    }
+
+    bool canCarry() const
+    {
+        return carried() < carryCapacity;
+    }
+
+    int remainingCarry() const
+    {
+        return carryCapacity - carried();
+    }
+
+    void handleReturn(const Position &shack,
+                      vector<string> &actions) const
+    {
+        if (manhattan(x, y, shack.x, shack.y) == 1)
+        {
             emitAction(actions, "DROP " + to_string(id));
-        } else {
+        }
+        else
+        {
             emitAction(actions,
-                "MOVE " + to_string(id) + " " +
-                to_string(shack.x) + " " + to_string(shack.y)
-            );
+                       "MOVE " + to_string(id) + " " +
+                           to_string(shack.x) + " " + to_string(shack.y));
         }
     }
 };
 
-struct TrollStats {
-    int movementSpeed;
-    int carryCapacity;
-    int harvestPower;
-    int chopPower;
-    bool valid;
-};
-
-TrollStats getBestTrollStats(
-    const vector<Troll>& existing,
-    const ShackResources& res)
+bool canTrainTroll(
+    const vector<Troll> &existing,
+    const ShackResources &res,
+    const int movementSpeed,
+    const int carryCapacity,
+    const int harvestPower,
+    const int chopPower)
 {
     int n = (int)existing.size();
 
-    int bestMs = 1;
-    int bestCc = 1;
-    int bestHp = 1;
-    int bestCp = 0;
-
-    // =========================
-    // movementSpeed (max first)
-    // =========================
-    for (int ms = 5; ms >= 1; ms--) {
-        int cost = n + ms * ms;
-        if (res.plum >= cost) {
-            bestMs = ms;
-            break;
-        }
-    }
-
-    // =========================
-    // carryCapacity
-    // =========================
-    for (int cc = 5; cc >= 1; cc--) {
-        int cost = n + cc * cc;
-        if (res.lemon >= cost) {
-            bestCc = cc;
-            break;
-        }
-    }
-
-    // =========================
-    // harvestPower
-    // =========================
-    for (int hp = 5; hp >= 1; hp--) {
-        int cost = n + hp * hp;
-        if (res.apple >= cost) {
-            bestHp = hp;
-            break;
-        }
-    }
-
-    // =========================
-    // chopPower (iron-gated)
-    // =========================
-    for (int cp = 3; cp >= 0; cp--) {
-        int cost = n + cp * cp;
-
-        if (cp > 0 && res.iron < cost)
-            continue;
-
-        bestCp = cp;
-        break;
-    }
-
-    TrollStats result;
-    result.movementSpeed = bestMs;
-    result.carryCapacity = bestCc;
-    result.harvestPower  = bestHp;
-    result.chopPower     = bestCp;
-    result.valid = true;
-
-    if (bestMs == 0 || bestCc == 0 || (bestHp == 0 && bestCp == 0))
-    {
-        result.valid = false;
-    }
-
-    return result;
+    if (res.plum >= n + movementSpeed * movementSpeed &&
+        res.lemon >= n + carryCapacity * carryCapacity &&
+        res.apple >= n + harvestPower * harvestPower &&
+        res.iron >= n + chopPower * chopPower)
+        return true;
+    return false;
 }
 
 // =====================================================
-// IRON FINDER (UPDATED)
+// MAP HELPERS
 // =====================================================
 
-Position closestIron(
-    int x, int y,
-    const vector<Position>& mines)
+static vector<Position> ironMines;
+
+Position closestIron(int x, int y)
 {
     int best = 1e9;
     Position res;
 
-    for (const auto& m : mines) {
-        int d = manhattan(x,y,m.x,m.y);
-        if (d < best) {
+    for (const auto &m : ironMines)
+    {
+        int d = manhattan(x, y, m.x, m.y);
+        if (d < best)
+        {
             best = d;
             res = m;
         }
@@ -237,21 +201,48 @@ Position closestIron(
     return res;
 }
 
+const Tree *closestTreeByType(
+    int x, int y,
+    const vector<Tree> &trees,
+    const string &type)
+{
+    const Tree *best = nullptr;
+    int bestDist = 1e9;
+
+    for (const auto &tr : trees)
+    {
+        cerr << "Checking tree at " << tr.x << " " << tr.y << " of type " << tr.type << " with " << tr.fruits << " fruits" << endl;
+        if (tr.type != type || tr.fruits == 0)
+            continue;
+
+        int d = manhattan(x, y, tr.x, tr.y);
+        if (d < bestDist)
+        {
+            bestDist = d;
+            best = &tr;
+        }
+    }
+
+    cerr << "Closest tree of type " << type << " is at " << (best ? to_string(best->x) + " " + to_string(best->y) : "none") << endl;
+    return best;
+}
+
 // =====================================================
 // PARSING
 // =====================================================
 
-void parseMap(int w, int h,
-              vector<string>& grid,
-              vector<Position>& ironMines)
+void parseMap(int w, int h, vector<string> &grid)
 {
     grid.resize(h);
 
-    for (int y = 0; y < h; y++) {
+    for (int y = 0; y < h; y++)
+    {
         getline(cin, grid[y]);
 
-        for (int x = 0; x < w; x++) {
-            if (grid[y][x] == '+') {
+        for (int x = 0; x < w; x++)
+        {
+            if (grid[y][x] == '+')
+            {
                 Position p;
                 p.x = x;
                 p.y = y;
@@ -261,43 +252,44 @@ void parseMap(int w, int h,
     }
 }
 
-void parseResources(ShackResources& me, ShackResources& enemy) {
+void parseResources(ShackResources &me, ShackResources &enemy)
+{
     cin >> me.plum >> me.lemon >> me.apple >> me.banana >> me.iron >> me.wood;
     cin >> enemy.plum >> enemy.lemon >> enemy.apple >> enemy.banana >> enemy.iron >> enemy.wood;
 }
 
-vector<Tree> parseTrees() {
+vector<Tree> parseTrees()
+{
     int n;
     cin >> n;
 
     vector<Tree> trees(n);
 
-    for (auto& t : trees)
+    for (auto &t : trees)
         cin >> t.type >> t.x >> t.y >> t.size >> t.health >> t.fruits >> t.cooldown;
 
     return trees;
 }
 
-vector<Troll> parseTrolls(Position& shack) {
+vector<Troll> parseTrolls(Position &shack)
+{
     int n;
     cin >> n;
 
     vector<Troll> trolls;
 
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++)
+    {
         Troll t;
 
-        cin >> t.id >> t.player >> t.x >> t.y
-            >> t.movementSpeed >> t.carryCapacity
-            >> t.harvestPower >> t.chopPower
-            >> t.carryPlum >> t.carryLemon
-            >> t.carryApple >> t.carryBanana
-            >> t.carryIron >> t.carryWood;
+        cin >> t.id >> t.player >> t.x >> t.y >> t.movementSpeed >> t.carryCapacity >> t.harvestPower >> t.chopPower >> t.carryPlum >> t.carryLemon >> t.carryApple >> t.carryBanana >> t.carryIron >> t.carryWood;
 
-        if (t.player == 0) {
+        if (t.player == 0)
+        {
             trolls.push_back(t);
 
-            if (shack.x == -1) {
+            if (shack.x == -1)
+            {
                 shack.x = t.x;
                 shack.y = t.y;
             }
@@ -312,29 +304,67 @@ vector<Troll> parseTrolls(Position& shack) {
 // =====================================================
 
 bool handleIronMining(
-    const Troll& t,
-    const Position& shack,
-    const vector<Position>& mines,
-    vector<string>& actions)
+    const Troll &t,
+    const Position &shack,
+    vector<string> &actions)
 {
-    if (t.carryIron >= t.carryCapacity) {
+    if (!t.canCarry())
+    {
         t.handleReturn(shack, actions);
         return true;
     }
 
-    Position iron = closestIron(t.x, t.y, mines);
+    Position iron = closestIron(t.x, t.y);
 
     if (iron.x == -1)
         return false;
 
-    if (manhattan(t.x,t.y,iron.x,iron.y) == 1) {
+    if (manhattan(t.x, t.y, iron.x, iron.y) == 1)
+    {
         emitAction(actions, "MINE " + to_string(t.id));
-    } else {
+    }
+    else
+    {
+        cerr << "Troll " << t.id << " is moving to iron mine at " << iron.x << " " << iron.y << endl;
         emitAction(actions,
-            "MOVE " + to_string(t.id) + " " +
-            to_string(iron.x) + " " +
-            to_string(iron.y)
-        );
+                   "MOVE " + to_string(t.id) + " " +
+                       to_string(iron.x) + " " +
+                       to_string(iron.y));
+    }
+
+    return true;
+}
+
+bool harvestFruit(
+    const Troll &t,
+    const Position &shack,
+    const vector<Tree> &trees,
+    const string fruitType,
+    vector<string> &actions)
+{
+    cerr << "Troll " << t.id << " should harvest " << fruitType << " with capacity of " << t.carried() << "/" << t.carryCapacity << endl;
+
+    if (!t.canCarry())
+    {
+        t.handleReturn(shack, actions);
+        return true;
+    }
+
+    const Tree *tr = closestTreeByType(t.x, t.y, trees, fruitType);
+
+    if (!tr)
+        return false;
+
+    if (t.x == tr->x && t.y == tr->y)
+    {
+        emitAction(actions, "HARVEST " + to_string(t.id));
+    }
+    else
+    {
+        cerr << "Troll " << t.id << " is moving to " << fruitType << " tree at " << tr->x << " " << tr->y << endl;
+        emitAction(actions,
+                   "MOVE " + to_string(t.id) + " " +
+                       to_string(tr->x) + " " + to_string(tr->y));
     }
 
     return true;
@@ -345,19 +375,22 @@ bool handleIronMining(
 // =====================================================
 
 bool handleTrees(
-    const Troll& t,
-    const vector<Tree>& trees,
-    vector<string>& actions)
+    const Troll &t,
+    const vector<Tree> &trees,
+    vector<string> &actions)
 {
     int best = -1;
     int bestDist = 1e9;
 
-    for (int i = 0; i < trees.size(); i++) {
-        if (trees[i].fruits == 0) continue;
+    for (int i = 0; i < trees.size(); i++)
+    {
+        if (trees[i].fruits == 0)
+            continue;
 
-        int d = manhattan(t.x,t.y,trees[i].x,trees[i].y);
+        int d = manhattan(t.x, t.y, trees[i].x, trees[i].y);
 
-        if (d < bestDist) {
+        if (d < bestDist)
+        {
             bestDist = d;
             best = i;
         }
@@ -366,15 +399,18 @@ bool handleTrees(
     if (best == -1)
         return false;
 
-    const Tree& tr = trees[best];
+    const Tree &tr = trees[best];
 
-    if (t.x == tr.x && t.y == tr.y) {
+    if (t.x == tr.x && t.y == tr.y)
+    {
         emitAction(actions, "HARVEST " + to_string(t.id));
-    } else {
+    }
+    else
+    {
+        cerr << "Troll " << t.id << " is moving to tree at " << tr.x << " " << tr.y << endl;
         emitAction(actions,
-            "MOVE " + to_string(t.id) + " " +
-            to_string(tr.x) + " " + to_string(tr.y)
-        );
+                   "MOVE " + to_string(t.id) + " " +
+                       to_string(tr.x) + " " + to_string(tr.y));
     }
 
     return true;
@@ -385,18 +421,18 @@ bool handleTrees(
 // =====================================================
 
 bool plant(
-    Troll& t,
-    vector<Tree>& trees,
-    const Position& shack,
-    vector<string>& actions)
+    Troll &t,
+    vector<Tree> &trees,
+    const Position &shack,
+    vector<string> &actions)
 {
-    int d = manhattan(t.x,t.y,shack.x,shack.y);
+    int d = manhattan(t.x, t.y, shack.x, shack.y);
 
     if (d == 0 || d > 3)
         return false;
 
     bool exists = false;
-    for (auto& tr : trees)
+    for (auto &tr : trees)
         if (tr.x == t.x && tr.y == t.y)
             exists = true;
 
@@ -405,16 +441,19 @@ bool plant(
 
     string type;
 
-    if (t.carryPlum) type = "PLUM";
-    else if (t.carryLemon) type = "LEMON";
-    else if (t.carryApple) type = "APPLE";
-    else if (t.carryBanana) type = "BANANA";
+    if (t.carryPlum)
+        type = "PLUM";
+    else if (t.carryLemon)
+        type = "LEMON";
+    else if (t.carryApple)
+        type = "APPLE";
+    else if (t.carryBanana)
+        type = "BANANA";
     else
         return false;
 
     emitAction(actions,
-        "PLANT " + to_string(t.id) + " " + type
-    );
+               "PLANT " + to_string(t.id) + " " + type);
 
     return true;
 }
@@ -424,40 +463,118 @@ bool plant(
 // =====================================================
 
 void playTrolls(
-    vector<Troll>& trolls,
-    vector<Tree>& trees,
-    vector<Position>& mines,
-    Position& shack,
-    ShackResources& resources,
-    vector<string>& actions)
+    vector<Troll> &trolls,
+    vector<Tree> &trees,
+    Position &shack,
+    ShackResources &resources,
+    vector<string> &actions)
 {
-    int bestMiner = -1;
-    int bestPower = -1;
+    // Mine for a third troll
+    bool shouldHarvestPlums = trolls.size() < 3 && resources.plum < trolls.size() + 2 * 2;
+    bool shouldHarvestLemon = trolls.size() < 3 && resources.lemon < trolls.size() + 3 * 3;
+    bool shouldHarvestApples = trolls.size() < 3 && resources.apple < trolls.size() + 0 * 0;
+    bool shouldChopIron = trolls.size() < 3 && resources.iron < trolls.size() + 3 * 3;
 
-    for (int i = 0; i < trolls.size(); i++) {
-        if (trolls[i].chopPower > bestPower) {
-            bestPower = trolls[i].chopPower;
-            bestMiner = i;
+    int bestCarryCapacity = 0;
+    int bestHarvestPower = 0;
+
+    int bestTrollForLemon = -1;
+    if (shouldHarvestLemon)
+    {
+        for (int i = 0; i < trolls.size(); i++)
+        {
+            if (trolls[i].carryCapacity >= bestCarryCapacity && trolls[i].harvestPower > bestHarvestPower)
+            {
+                bestHarvestPower = trolls[i].harvestPower;
+                bestTrollForLemon = trolls[i].id;
+            }
         }
+
+        cerr << "Best troll for lemon is " << bestTrollForLemon << " with harvest power " << bestHarvestPower << endl;
+    }
+    int bestTrollForIron = -1;
+    if (shouldChopIron)
+    {
+        bestCarryCapacity = 0;
+        bestHarvestPower = 0;
+        for (int i = 0; i < trolls.size(); i++)
+        {
+            // cerr << "Troll " << trolls[i].id << " has chop power " << trolls[i].chopPower << " and carry capacity " << trolls[i].carryCapacity << endl;
+
+            if (trolls[i].carryCapacity >= bestCarryCapacity && trolls[i].chopPower > bestHarvestPower)
+            {
+                bestHarvestPower = trolls[i].chopPower;
+                bestTrollForIron = trolls[i].id;
+            }
+        }
+
+        cerr << "Best troll for iron is " << bestTrollForIron << " with chop power " << bestHarvestPower << endl;
     }
 
-    bool allowMining = resources.iron < 2 * trolls.size();
+    int bestTrollForPlums = -1;
+    if (shouldHarvestPlums)
+    {
+        bestCarryCapacity = 0;
+        bestHarvestPower = 0;
+        for (int i = 0; i < trolls.size(); i++)
+        {
+            if (trolls[i].carryCapacity >= bestCarryCapacity && trolls[i].harvestPower > bestHarvestPower)
+            {
+                bestHarvestPower = trolls[i].harvestPower;
+                bestTrollForPlums = trolls[i].id;
+            }
+        }
 
-    for (int i = 0; i < trolls.size(); i++) {
+        cerr << "Best troll for plums is " << bestTrollForPlums << " with harvest power " << bestHarvestPower << endl;
+    }
 
-        Troll& t = trolls[i];
+    int bestTrollForApples = -1;
+    if (shouldHarvestApples)
+    {
+        bestCarryCapacity = 0;
+        bestHarvestPower = 0;
+        for (int i = 0; i < trolls.size(); i++)
+        {
+            if (trolls[i].carryCapacity >= bestCarryCapacity && trolls[i].harvestPower > bestHarvestPower)
+            {
+                bestHarvestPower = trolls[i].harvestPower;
+                bestTrollForApples = trolls[i].id;
+            }
+        }
 
-        if (plant(t,trees,shack,actions))
-            continue;
+        cerr << "Best troll for apples is " << bestTrollForApples << " with harvest power " << bestHarvestPower << endl;
+    }
 
-        bool isMiner = (i == bestMiner);
+    for (int i = 0; i < trolls.size(); i++)
+    {
+        Troll &t = trolls[i];
 
-        if (allowMining && isMiner) {
-            if (handleIronMining(t, shack, mines, actions))
+        if (t.id == bestTrollForLemon)
+        {
+            if (harvestFruit(t, shack, trees, "LEMON", actions))
+                continue;
+        }
+        else if (t.id == bestTrollForIron)
+        {
+            if (handleIronMining(t, shack, actions))
+                continue;
+        }
+        else if (t.id == bestTrollForPlums)
+        {
+            if (harvestFruit(t, shack, trees, "PLUM", actions))
+                continue;
+        }
+        else if (t.id == bestTrollForApples)
+        {
+            if (harvestFruit(t, shack, trees, "APPLE", actions))
                 continue;
         }
 
-        if (t.carried() > 0) {
+        if (plant(t, trees, shack, actions))
+            continue;
+
+        if (t.isCarrying())
+        {
             t.handleReturn(shack, actions);
             continue;
         }
@@ -471,40 +588,92 @@ void playTrolls(
 // TRAIN
 // =====================================================
 
-void trainAction(
-    const vector<Troll>& trolls,
-    const ShackResources& me,
-    int turn,
-    vector<string>& actions)
+void trainFirstTroll(
+    const vector<Troll> &trolls,
+    const ShackResources &me,
+    vector<string> &actions)
 {
-    int n = trolls.size();
-
-    TrollStats stats = getBestTrollStats(trolls, me);
-
-    if (!stats.valid)
-        return;
-
-    int costPlum  = n + stats.movementSpeed * stats.movementSpeed;
-    int costLemon = n + stats.carryCapacity * stats.carryCapacity;
-    int costApple = n + stats.harvestPower * stats.harvestPower;
-    int costIron  = n + stats.chopPower * stats.chopPower;
-
-    int totalCost = costPlum + costLemon + costApple + costIron;
-
-    bool canTrain =
-        me.plum  >= costPlum &&
-        me.lemon >= costLemon &&
-        me.apple >= costApple &&
-        me.iron  >= costIron;
-
-    if (canTrain && totalCost * 6 < (MAX_TURNS - turn)) {
-
+    // Big Chopper
+    if (canTrainTroll(trolls, me, 2, 3, 0, 3))
+    {
         string action =
             "TRAIN " +
-            to_string(stats.movementSpeed) + " " +
-            to_string(stats.carryCapacity) + " " +
-            to_string(stats.harvestPower) + " " +
-            to_string(stats.chopPower);
+            to_string(2) + " " +
+            to_string(3) + " " +
+            to_string(0) + " " +
+            to_string(3);
+
+        emitAction(actions, action);
+    }
+    // Medium Chopper
+    else if (canTrainTroll(trolls, me, 2, 2, 0, 2))
+    {
+        string action =
+            "TRAIN " +
+            to_string(2) + " " +
+            to_string(2) + " " +
+            to_string(0) + " " +
+            to_string(2);
+
+        emitAction(actions, action);
+    }
+    // Big Harvester
+    else if (canTrainTroll(trolls, me, 1, 3, 3, 0))
+    {
+        string action =
+            "TRAIN " +
+            to_string(1) + " " +
+            to_string(3) + " " +
+            to_string(3) + " " +
+            to_string(0);
+
+        emitAction(actions, action);
+    }
+    // Medium Harvester
+    else if (canTrainTroll(trolls, me, 1, 2, 2, 0))
+    {
+        string action =
+            "TRAIN " +
+            to_string(1) + " " +
+            to_string(2) + " " +
+            to_string(2) + " " +
+            to_string(0);
+
+        emitAction(actions, action);
+    }
+    // Small Harvester
+    else if (canTrainTroll(trolls, me, 1, 1, 1, 0))
+    {
+        string action =
+            "TRAIN " +
+            to_string(1) + " " +
+            to_string(1) + " " +
+            to_string(1) + " " +
+            to_string(0);
+
+        emitAction(actions, action);
+    }
+}
+
+void trainAction(
+    const vector<Troll> &trolls,
+    const ShackResources &me,
+    int turn,
+    vector<string> &actions)
+{
+    int n = trolls.size();
+    if (n >= 3)
+        return;
+
+    // Big Chopper
+    if (canTrainTroll(trolls, me, 2, 3, 0, 3))
+    {
+        string action =
+            "TRAIN " +
+            to_string(2) + " " +
+            to_string(3) + " " +
+            to_string(0) + " " +
+            to_string(3);
 
         emitAction(actions, action);
     }
@@ -514,41 +683,46 @@ void trainAction(
 // MAIN
 // =====================================================
 
-int main() {
+int main()
+{
 
-    int w,h;
+    int w, h;
     cin >> w >> h;
     cin.ignore();
 
     vector<string> grid;
-    vector<Position> mines;
 
-    parseMap(w,h,grid,mines);
+    parseMap(w, h, grid);
 
     Position shack;
     shack.x = -1;
 
     int turn = 0;
 
-    while (true) {
-
+    while (true)
+    {
         turn++;
 
         ShackResources me, enemy;
-        parseResources(me,enemy);
+        parseResources(me, enemy);
 
         vector<Tree> trees = parseTrees();
         vector<Troll> trolls = parseTrolls(shack);
 
         vector<string> actions;
 
-        trainAction(trolls, me, turn, actions);
+        if (turn == 1)
+            trainFirstTroll(trolls, me, actions);
+        else
+            trainAction(trolls, me, turn, actions);
 
-        playTrolls(trolls,trees,mines,shack,me,actions);
+        playTrolls(trolls, trees, shack, me, actions);
 
-        for (int i = 0; i < actions.size(); i++) {
+        for (int i = 0; i < actions.size(); i++)
+        {
             cout << actions[i];
-            if (i + 1 < actions.size()) cout << ";";
+            if (i + 1 < actions.size())
+                cout << ";";
         }
         cout << endl;
     }
