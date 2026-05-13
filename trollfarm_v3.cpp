@@ -8,7 +8,7 @@
 #include <cstdlib>
 
 /*
-    3.1: Try economic strategy
+    3
 
     Game plan :
         - Create static BFS lookup table at first turn. Ouput move based on troll speed and BFS distance to target.
@@ -27,6 +27,13 @@
                 * 1.2 if next to water
         - When trolls count = 3 -> Plant on all cells with d<=2 ??
         - Do NOT plant trees if shacks distance is <= 5
+    
+
+    Algorithm :
+        - Faire un MCTS classique avec une heuristic.
+        - Faire un macro-MCTS en ajoutant des macro actions. Soit un séquence défini de k actions qui termine sur un état à t+k tours
+        - Tester un HMCTS-OP avec le graph MAXQ suivant :
+        
 */
 
 using namespace std;
@@ -64,7 +71,6 @@ void emitAction(vector<string> &actions, const string &action)
 constexpr int MAX_MAP_HEIGHT = 11;
 constexpr int MAX_MAP_WIDTH = 2 * MAX_MAP_HEIGHT;
 
-char grid[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
 int bfs_dist_lookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH][MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
 
 bool isCellWalkable(char c)
@@ -72,7 +78,7 @@ bool isCellWalkable(char c)
     return c == '.';
 }
 
-void buildBfsLookup(int w, int h)
+void buildBfsLookup(int w, int h, const char g[][MAX_MAP_WIDTH])
 {
     for (int sy = 0; sy < h; sy++)
         for (int sx = 0; sx < w; sx++)
@@ -88,7 +94,7 @@ void buildBfsLookup(int w, int h)
         for (int sx = 0; sx < w; sx++)
         {
             // If the cell is not walkable and isn't a shack, we won't be able to stand on it so we can skip BFS from it
-            if (!isCellWalkable(grid[sy][sx]) && grid[sy][sx] != '0' && grid[sy][sx] != '2')
+            if (!isCellWalkable(g[sy][sx]) && g[sy][sx] != '0' && g[sy][sx] != '2')
                 continue;
 
             bfs_dist_lookup[sy][sx][sy][sx] = 0;
@@ -107,7 +113,7 @@ void buildBfsLookup(int w, int h)
                     int ny = y + dys[k];
                     if (nx < 0 || nx >= w || ny < 0 || ny >= h)
                         continue;
-                    if (!isCellWalkable(grid[ny][nx]))
+                    if (!isCellWalkable(g[ny][nx]))
                         continue;
                     if (bfs_dist_lookup[sy][sx][ny][nx] != -1)
                         continue;
@@ -154,12 +160,14 @@ public:
 };
 
 // =====================================================
-// SHACK RESOURCES
+// SHACK
 // =====================================================
 
-class ShackResources
+class Shack
 {
 public:
+    int x = -1;
+    int y = -1;
     int plum, lemon, apple, banana, iron, wood;
 };
 
@@ -216,7 +224,7 @@ public:
         return carryCapacity - carried();
     }
 
-    void handleReturn(const Position &shack,
+    void handleReturn(const Shack &shack,
                       vector<string> &actions) const
     {
         if (manhattan(x, y, shack.x, shack.y) <= 1)
@@ -275,8 +283,8 @@ Position pickMoveTarget(int src_x, int src_y, int dst_x, int dst_y, int speed,
     best.y = -1;
     int bestDist = 1 << 30;
 
-    displayBfsDistsFrom(h, w, src_x, src_y);
-    displayBfsDistsFrom(h, w, dst_x, dst_y);
+    // displayBfsDistsFrom(h, w, src_x, src_y);
+    // displayBfsDistsFrom(h, w, dst_x, dst_y);
 
     for (int y = 0; y < h; y++)
     {
@@ -320,7 +328,7 @@ Position pickMoveTarget(int src_x, int src_y, int dst_x, int dst_y, int speed,
 
 bool generateBestTrollStats(
     const vector<Troll> &existing,
-    const ShackResources &res,
+    const Shack &myShack,
     vector<string> &actions)
 {
     int n = (int)existing.size();
@@ -329,7 +337,7 @@ bool generateBestTrollStats(
     for (int ms = 3; ms >= 1; ms--)
     {
         int cost = n + ms * ms;
-        if (res.plum >= cost)
+        if (myShack.plum >= cost)
         {
             bestMs = ms;
             break;
@@ -340,7 +348,7 @@ bool generateBestTrollStats(
     for (int cc = 3; cc >= 1; cc--)
     {
         int cost = n + cc * cc;
-        if (res.lemon >= cost)
+        if (myShack.lemon >= cost)
         {
             bestCc = cc;
             break;
@@ -351,7 +359,7 @@ bool generateBestTrollStats(
     for (int hp = 3; hp >= 1; hp--)
     {
         int cost = n + hp * hp;
-        if (res.apple >= cost)
+        if (myShack.apple >= cost)
         {
             bestHp = hp;
             break;
@@ -363,7 +371,7 @@ bool generateBestTrollStats(
     {
         int cost = n + cp * cp;
 
-        if (res.iron < cost)
+        if (myShack.iron < cost)
             continue;
 
         bestCp = cp;
@@ -407,6 +415,20 @@ void assignTrollTasks(vector<Troll> &trolls)
 }
 
 // =====================================================
+// STATE
+// =====================================================
+
+struct State
+{
+    char grid[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+    Shack myShack;
+    Shack enemyShack;
+    vector<Tree> trees;
+    vector<Troll> trolls;
+    vector<Troll> enemyTrolls;
+};
+
+// =====================================================
 // MAP HELPERS
 // =====================================================
 
@@ -415,7 +437,7 @@ static vector<Position> ironMines;
 const Tree *bestEnemyTree(
     const vector<Troll> &trolls,
     const Troll &t,
-    Position enemyShack,
+    const Shack &enemyShack,
     const vector<Tree> &trees)
 {
     const Tree *best = nullptr;
@@ -451,8 +473,8 @@ const Tree *bestEnemyTree(
 bool chopEnemyTrees(
     const vector<Troll> &trolls,
     const Troll &t,
-    const Position &myShack,
-    const Position &enemyShack,
+    const Shack &myShack,
+    const Shack &enemyShack,
     const vector<Tree> &trees,
     vector<string> &actions)
 {
@@ -486,26 +508,25 @@ bool chopEnemyTrees(
 // CHOPPING SCALING
 // =====================================================
 
-string pickableFruit(const ShackResources &res)
+string pickableFruit(const Shack &shack)
 {
-    if (res.banana > 0)
+    if (shack.banana > 0)
         return "BANANA";
-    if (res.apple > 0)
+    if (shack.apple > 0)
         return "APPLE";
-    if (res.plum > 0)
+    if (shack.plum > 0)
         return "PLUM";
-    if (res.lemon > 0)
+    if (shack.lemon > 0)
         return "LEMON";
     return "";
 }
 
 bool pickFruitFromShack(
     const Troll &t,
-    const Position &myShack,
-    const ShackResources &myResources,
+    const Shack &myShack,
     vector<string> &actions)
 {
-    string fruitType = pickableFruit(myResources);
+    string fruitType = pickableFruit(myShack);
     if (fruitType.empty())
         return false;
 
@@ -527,7 +548,7 @@ bool isOnTree(const Troll &t, const vector<Tree> &trees)
 
 // True if troll's current cell is a valid planting spot:
 // within d=1..3 of myShack, not on either shack, and no tree already there.
-bool isPlantable(const Troll &t, const Position &myShack, const Position &enemyShack, const vector<Tree> &trees)
+bool isPlantable(const Troll &t, const Shack &myShack, const Shack &enemyShack, const vector<Tree> &trees)
 {
     if (t.x == myShack.x && t.y == myShack.y)
         return false;
@@ -543,7 +564,7 @@ bool isPlantable(const Troll &t, const Position &myShack, const Position &enemyS
 bool plant(
     const Troll &t,
     const vector<Tree> &trees,
-    const Position &shack,
+    const Shack &shack,
     vector<string> &actions)
 {
     string type;
@@ -565,7 +586,7 @@ bool plant(
 
 // Returns the nearest free cell at manhattan distance 1..3 from shack,
 // scanning outward so we plant as close as possible.
-Position findPlantSpot(const Position &shack, const vector<Tree> &trees)
+Position findPlantSpot(const Shack &shack, const vector<Tree> &trees)
 {
     for (int d = 1; d <= 3; d++)
     {
@@ -600,10 +621,9 @@ void plantAndChopTrees(
     const vector<Troll> &trolls,
     const vector<Troll> &enemyTrolls,
     const Troll &t,
-    const Position &myShack,
-    const Position &enemyShack,
+    const Shack &myShack,
+    const Shack &enemyShack,
     const vector<Tree> &trees,
-    const ShackResources &myResources,
     vector<string> &actions)
 {
     cerr << "plantAndChopTrees(): Troll " << t.id << "[" << t.task << "] carry=" << t.carried() << "/" << t.carryCapacity << " | wood=" << t.carryWood << endl;
@@ -629,7 +649,7 @@ void plantAndChopTrees(
     // Carry nothing → pick a fruit from shack
     if (!carryingFruit)
     {
-        if (!pickFruitFromShack(t, myShack, myResources, actions))
+        if (!pickFruitFromShack(t, myShack, actions))
             chopEnemyTrees(trolls, t, myShack, enemyShack, trees, actions);
         return;
     }
@@ -656,9 +676,8 @@ void playTrolls(
     vector<Troll> &trolls,
     const vector<Troll> &enemyTrolls,
     vector<Tree> &trees,
-    Position &myShack,
-    Position &enemyShack,
-    ShackResources &myResources,
+    Shack &myShack,
+    Shack &enemyShack,
     vector<string> &actions)
 {
     for (int i = 0; i < (int)trolls.size(); i++)
@@ -668,7 +687,7 @@ void playTrolls(
         if (t.task == CHOPPERWARRIOR)
             chopEnemyTrees(trolls, t, myShack, enemyShack, trees, actions);
         else
-            plantAndChopTrees(trolls, enemyTrolls, t, myShack, enemyShack, trees, myResources, actions);
+            plantAndChopTrees(trolls, enemyTrolls, t, myShack, enemyShack, trees, actions);
     }
 }
 
@@ -676,19 +695,18 @@ void playTrolls(
 // PARSING
 // =====================================================
 
-void parseMap(int w, int h, vector<string> &grid)
+void parseMap(int w, int h, State &state)
 {
-    grid.resize(h);
-
     for (int y = 0; y < h; y++)
     {
-        getline(cin, grid[y]);
+        string row;
+        getline(cin, row);
 
         for (int x = 0; x < w; x++)
         {
-            ::grid[y][x] = grid[y][x];
+            state.grid[y][x] = row[x];
 
-            if (grid[y][x] == '+')
+            if (row[x] == '+')
             {
                 Position p;
                 p.x = x;
@@ -699,31 +717,31 @@ void parseMap(int w, int h, vector<string> &grid)
     }
 }
 
-void parseResources(ShackResources &me, ShackResources &enemy)
+void parseResources(State &state)
 {
+    auto &me = state.myShack;
+    auto &enemy = state.enemyShack;
     cin >> me.plum >> me.lemon >> me.apple >> me.banana >> me.iron >> me.wood;
     cin >> enemy.plum >> enemy.lemon >> enemy.apple >> enemy.banana >> enemy.iron >> enemy.wood;
 }
 
-vector<Tree> parseTrees()
+void parseTrees(State &state)
 {
     int n;
     cin >> n;
 
-    vector<Tree> trees(n);
-
-    for (auto &t : trees)
+    state.trees.resize(n);
+    for (auto &t : state.trees)
         cin >> t.type >> t.x >> t.y >> t.size >> t.health >> t.fruits >> t.cooldown;
-
-    return trees;
 }
 
-vector<Troll> parseTrolls(Position &myShack, Position &enemyShack, vector<Troll> &enemyTrolls)
+void parseTrolls(State &state)
 {
     int n;
     cin >> n;
 
-    vector<Troll> trolls;
+    state.trolls.clear();
+    state.enemyTrolls.clear();
 
     for (int i = 0; i < n; i++)
     {
@@ -733,26 +751,24 @@ vector<Troll> parseTrolls(Position &myShack, Position &enemyShack, vector<Troll>
 
         if (t.player == 0)
         {
-            trolls.push_back(t);
+            state.trolls.push_back(t);
 
-            if (myShack.x == -1)
+            if (state.myShack.x == -1)
             {
-                myShack.x = t.x;
-                myShack.y = t.y;
+                state.myShack.x = t.x;
+                state.myShack.y = t.y;
             }
         }
         else
         {
-            enemyTrolls.push_back(t);
-            if (enemyShack.x == -1)
+            state.enemyTrolls.push_back(t);
+            if (state.enemyShack.x == -1)
             {
-                enemyShack.x = t.x;
-                enemyShack.y = t.y;
+                state.enemyShack.x = t.x;
+                state.enemyShack.y = t.y;
             }
         }
     }
-
-    return trolls;
 }
 
 // =====================================================
@@ -766,38 +782,34 @@ int main()
     cin >> w >> h;
     cin.ignore();
 
-    vector<string> grid;
+    State state;
+    state.myShack.x = -1;
+    state.enemyShack.x = -1;
 
-    parseMap(w, h, grid);
-    buildBfsLookup(w, h);
+    parseMap(w, h, state);
+    buildBfsLookup(w, h, state.grid);
 
-    Position myShack;
-    Position enemyShack;
-
-    myShack.x = -1;
-    enemyShack.x = -1;
-
+    State prevState;
     int turn = 0;
 
     while (true)
     {
         turn++;
 
-        ShackResources myResources, enemyResources;
-        parseResources(myResources, enemyResources);
+        prevState = state;
 
-        vector<Tree> trees = parseTrees();
-        vector<Troll> enemyTrolls;
-        vector<Troll> trolls = parseTrolls(myShack, enemyShack, enemyTrolls);
+        parseResources(state);
+        parseTrees(state);
+        parseTrolls(state);
 
-        assignTrollTasks(trolls);
+        assignTrollTasks(state.trolls);
 
         vector<string> actions;
 
-        if (trolls.size() < 2)
-            generateBestTrollStats(trolls, myResources, actions);
+        if (state.trolls.size() < 2)
+            generateBestTrollStats(state.trolls, state.myShack, actions);
 
-        playTrolls(trolls, enemyTrolls, trees, myShack, enemyShack, myResources, actions);
+        playTrolls(state.trolls, state.enemyTrolls, state.trees, state.myShack, state.enemyShack, actions);
 
         vector<string> filtered;
         for (const string &action : actions)
@@ -813,7 +825,7 @@ int main()
             sscanf(action.c_str(), "MOVE %*d %d %d", &tx, &ty);
 
             const Troll *mover = nullptr;
-            for (const auto &t : trolls)
+            for (const auto &t : state.trolls)
                 if (t.id == trollId)
                 {
                     mover = &t;
@@ -829,7 +841,7 @@ int main()
 
             Position step = pickMoveTarget(mover->x, mover->y, tx, ty,
                                            mover->movementSpeed,
-                                           trolls, trollId, w, h);
+                                           state.trolls, trollId, w, h);
 
             if (step.x == -1)
             {
