@@ -56,6 +56,101 @@ void emitAction(vector<string> &actions, const string &action)
 }
 
 // =====================================================
+// LOOKUP TABLES
+// =====================================================
+
+constexpr int MAX_MAP_HEIGHT = 11;
+constexpr int MAX_MAP_WIDTH = 2 * MAX_MAP_HEIGHT;
+
+char grid[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+int bfs_dist_lookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH][MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+
+bool isCellWalkable(char c)
+{
+    return c == '.' || c == '+' || c == '0' || c == '1';
+}
+
+void buildBfsLookup(int w, int h)
+{
+    for (int sy = 0; sy < h; sy++)
+        for (int sx = 0; sx < w; sx++)
+            for (int ty = 0; ty < h; ty++)
+                for (int tx = 0; tx < w; tx++)
+                    bfs_dist_lookup[sy][sx][ty][tx] = -1;
+
+    int dxs[4] = {1, -1, 0, 0};
+    int dys[4] = {0, 0, 1, -1};
+
+    for (int sy = 0; sy < h; sy++)
+    {
+        for (int sx = 0; sx < w; sx++)
+        {
+            if (!isCellWalkable(grid[sy][sx]))
+                continue;
+
+            bfs_dist_lookup[sy][sx][sy][sx] = 0;
+            queue<pair<int, int>> q;
+            q.push({sx, sy});
+
+            while (!q.empty())
+            {
+                auto [x, y] = q.front();
+                q.pop();
+                int d = bfs_dist_lookup[sy][sx][y][x];
+
+                for (int k = 0; k < 4; k++)
+                {
+                    int nx = x + dxs[k];
+                    int ny = y + dys[k];
+                    if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                        continue;
+                    if (!isCellWalkable(grid[ny][nx]))
+                        continue;
+                    if (bfs_dist_lookup[sy][sx][ny][nx] != -1)
+                        continue;
+                    bfs_dist_lookup[sy][sx][ny][nx] = d + 1;
+                    q.push({nx, ny});
+                }
+            }
+        }
+    }
+}
+
+void displayBfsFromRandomCell(int w, int h)
+{
+    int sx = -1, sy = -1;
+    for (int tries = 0; tries < 1000; tries++)
+    {
+        int rx = rand() % w;
+        int ry = rand() % h;
+        if (isCellWalkable(grid[ry][rx]))
+        {
+            sx = rx;
+            sy = ry;
+            break;
+        }
+    }
+    if (sx == -1)
+        return;
+
+    cerr << "BFS distances from (" << sx << "," << sy << "):" << endl;
+    for (int y = 0; y < h; y++)
+    {
+        for (int x = 0; x < w; x++)
+        {
+            int d = bfs_dist_lookup[sy][sx][y][x];
+            if (d < 0)
+                cerr << " ##";
+            else if (d < 10)
+                cerr << "  " << d;
+            else
+                cerr << " " << d;
+        }
+        cerr << endl;
+    }
+}
+
+// =====================================================
 // TREE
 // =====================================================
 
@@ -153,8 +248,20 @@ public:
 vector<Position> nextStepsToward(int sx, int sy, int tx, int ty)
 {
     vector<Position> steps;
-    if (tx != sx) { Position p; p.x = sx + (tx > sx ? 1 : -1); p.y = sy;                      steps.push_back(p); }
-    if (ty != sy) { Position p; p.x = sx;                       p.y = sy + (ty > sy ? 1 : -1); steps.push_back(p); }
+    if (tx != sx)
+    {
+        Position p;
+        p.x = sx + (tx > sx ? 1 : -1);
+        p.y = sy;
+        steps.push_back(p);
+    }
+    if (ty != sy)
+    {
+        Position p;
+        p.x = sx;
+        p.y = sy + (ty > sy ? 1 : -1);
+        steps.push_back(p);
+    }
     return steps;
 }
 
@@ -171,7 +278,8 @@ bool isOccupied(const Position &p,
                 int selfId)
 {
     for (const auto &t : trolls)
-        if (t.id != selfId && t.x == p.x && t.y == p.y) return true;
+        if (t.id != selfId && t.x == p.x && t.y == p.y)
+            return true;
     return false;
 }
 
@@ -185,32 +293,50 @@ Position findMoveRedirect(int sx, int sy, int tx, int ty,
 {
     auto primary = nextStepsToward(sx, sy, tx, ty);
 
-    auto blocked = [&](const Position &p) {
+    auto blocked = [&](const Position &p)
+    {
         return !isWalkable(p.x, p.y, grid) || isOccupied(p, trolls, selfId);
     };
 
     bool anyBlocked = false;
     for (const auto &p : primary)
-        if (blocked(p)) { anyBlocked = true; break; }
+        if (blocked(p))
+        {
+            anyBlocked = true;
+            break;
+        }
 
-    if (!anyBlocked) { Position none; none.x = -1; none.y = -1; return none; }
+    if (!anyBlocked)
+    {
+        Position none;
+        none.x = -1;
+        none.y = -1;
+        return none;
+    }
 
     // Prefer a free primary step
     for (const auto &p : primary)
-        if (!blocked(p)) return p;
+        if (!blocked(p))
+            return p;
 
     // All primary steps blocked – try remaining adjacent cells as fallback
     set<pair<int, int>> primarySet;
-    for (const auto &p : primary) primarySet.insert({p.x, p.y});
+    for (const auto &p : primary)
+        primarySet.insert({p.x, p.y});
 
     Position adj[4] = {{sx + 1, sy}, {sx - 1, sy}, {sx, sy + 1}, {sx, sy - 1}};
     for (const auto &p : adj)
     {
-        if (primarySet.count({p.x, p.y})) continue;
-        if (!blocked(p)) return p;
+        if (primarySet.count({p.x, p.y}))
+            continue;
+        if (!blocked(p))
+            return p;
     }
 
-    Position none; none.x = -1; none.y = -1; return none;
+    Position none;
+    none.x = -1;
+    none.y = -1;
+    return none;
 }
 
 bool generateBestTrollStats(
@@ -662,6 +788,7 @@ int main()
     vector<string> grid;
 
     parseMap(w, h, grid);
+    buildBfsLookup(w, h);
 
     Position myShack;
     Position enemyShack;
@@ -681,6 +808,8 @@ int main()
         vector<Tree> trees = parseTrees();
         vector<Troll> enemyTrolls;
         vector<Troll> trolls = parseTrolls(myShack, enemyShack, enemyTrolls);
+
+        displayBfsFromRandomCell(w, h);
 
         assignTrollTasks(trolls);
 
@@ -702,7 +831,11 @@ int main()
 
                 const Troll *mover = nullptr;
                 for (const auto &t : trolls)
-                    if (t.id == trollId) { mover = &t; break; }
+                    if (t.id == trollId)
+                    {
+                        mover = &t;
+                        break;
+                    }
 
                 if (mover)
                 {
