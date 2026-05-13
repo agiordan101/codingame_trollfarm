@@ -4,9 +4,11 @@
 #include <algorithm>
 #include <cmath>
 #include <set>
+#include <queue>
+#include <cstdlib>
 
 /*
-    Try economic strategy
+    3.1: Try economic strategy
 
     Game plan :
         - Create static BFS lookup table at first turn. Ouput move based on troll speed and BFS distance to target.
@@ -67,7 +69,7 @@ int bfs_dist_lookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH][MAX_MAP_HEIGHT][MAX_MAP_WIDTH
 
 bool isCellWalkable(char c)
 {
-    return c == '.' || c == '+' || c == '0' || c == '1';
+    return c == '.';
 }
 
 void buildBfsLookup(int w, int h)
@@ -85,7 +87,8 @@ void buildBfsLookup(int w, int h)
     {
         for (int sx = 0; sx < w; sx++)
         {
-            if (!isCellWalkable(grid[sy][sx]))
+            // If the cell is not walkable and isn't a shack, we won't be able to stand on it so we can skip BFS from it
+            if (!isCellWalkable(grid[sy][sx]) && grid[sy][sx] != '0' && grid[sy][sx] != '2')
                 continue;
 
             bfs_dist_lookup[sy][sx][sy][sx] = 0;
@@ -116,23 +119,8 @@ void buildBfsLookup(int w, int h)
     }
 }
 
-void displayBfsFromRandomCell(int w, int h)
+void displayBfsDistsFrom(int h, int w, int sx, int sy)
 {
-    int sx = -1, sy = -1;
-    for (int tries = 0; tries < 1000; tries++)
-    {
-        int rx = rand() % w;
-        int ry = rand() % h;
-        if (isCellWalkable(grid[ry][rx]))
-        {
-            sx = rx;
-            sy = ry;
-            break;
-        }
-    }
-    if (sx == -1)
-        return;
-
     cerr << "BFS distances from (" << sx << "," << sy << "):" << endl;
     for (int y = 0; y < h; y++)
     {
@@ -244,99 +232,90 @@ public:
     }
 };
 
-// Returns the 1 or 2 cells adjacent to (sx,sy) that begin a path toward (tx,ty).
-vector<Position> nextStepsToward(int sx, int sy, int tx, int ty)
+// True when (src_x,src_y) and (dst_x,dst_y) are aligned (same row or same column) and
+// any cell on the straight line between them — endpoints included — is
+// occupied by an ally troll other than selfId.
+bool allyOnStraightPath(int src_x, int src_y, int dst_x, int dst_y,
+                        const vector<Troll> &trolls, int selfId)
 {
-    vector<Position> steps;
-    if (tx != sx)
-    {
-        Position p;
-        p.x = sx + (tx > sx ? 1 : -1);
-        p.y = sy;
-        steps.push_back(p);
-    }
-    if (ty != sy)
-    {
-        Position p;
-        p.x = sx;
-        p.y = sy + (ty > sy ? 1 : -1);
-        steps.push_back(p);
-    }
-    return steps;
-}
-
-bool isWalkable(int x, int y, const vector<string> &grid)
-{
-    if (y < 0 || y >= (int)grid.size() || x < 0 || x >= (int)grid[y].size())
+    if (src_x != dst_x && src_y != dst_y)
         return false;
-    char c = grid[y][x];
-    return c == '.' || c == '+' || c == '0' || c == '1';
-}
 
-bool isOccupied(const Position &p,
-                const vector<Troll> &trolls,
-                int selfId)
-{
-    for (const auto &t : trolls)
-        if (t.id != selfId && t.x == p.x && t.y == p.y)
-            return true;
+    int dx = (src_x == dst_x) ? 0 : (dst_x > src_x ? 1 : -1);
+    int dy = (src_y == dst_y) ? 0 : (dst_y > src_y ? 1 : -1);
+
+    int cx = src_x, cy = src_y;
+    while (true)
+    {
+        for (const auto &t : trolls)
+        {
+            if (t.id == selfId)
+                continue;
+            if (t.x == cx && t.y == cy)
+                return true;
+        }
+        
+        cx += dx;
+        cy += dy;
+        if (cx == dst_x && cy == dst_y)
+            break;
+    }
     return false;
 }
 
-// Returns a redirect cell when any direct step is blocked or unwalkable.
-// Tries free primary steps first, then the remaining adjacent cells as fallback.
-// Returns {-1,-1} when no redirect is needed or all neighbours are unavailable.
-Position findMoveRedirect(int sx, int sy, int tx, int ty,
-                          const vector<Troll> &trolls,
-                          int selfId,
-                          const vector<string> &grid)
+// Among cells at BFS distance == speed from (src_x,src_y), excluding cells occupied
+// by another ally troll, return the one with the smallest BFS distance to
+// (dst_x,dst_y). Returns {-1,-1} when no such cell exists.
+Position pickMoveTarget(int src_x, int src_y, int dst_x, int dst_y, int speed,
+                        const vector<Troll> &trolls, int selfId,
+                        int w, int h)
 {
-    auto primary = nextStepsToward(sx, sy, tx, ty);
+    Position best;
+    best.x = -1;
+    best.y = -1;
+    int bestDist = 1 << 30;
 
-    auto blocked = [&](const Position &p)
+    displayBfsDistsFrom(h, w, src_x, src_y);
+    displayBfsDistsFrom(h, w, dst_x, dst_y);
+
+    for (int y = 0; y < h; y++)
     {
-        return !isWalkable(p.x, p.y, grid) || isOccupied(p, trolls, selfId);
-    };
-
-    bool anyBlocked = false;
-    for (const auto &p : primary)
-        if (blocked(p))
+        for (int x = 0; x < w; x++)
         {
-            anyBlocked = true;
-            break;
+            // Unreachable or too far from current position
+            if (bfs_dist_lookup[src_y][src_x][y][x] < 1 || bfs_dist_lookup[src_y][src_x][y][x] > speed)
+                continue;
+
+            // Cell can't reach the destination if it's a shack
+            // So we check the opposite
+            int d = bfs_dist_lookup[dst_y][dst_x][y][x];
+            if (d < 0)
+                continue;
+
+            // Skip cells occupied by an ally
+            bool occupiedByAlly = false;
+            for (const auto &t : trolls)
+                if (t.id != selfId && t.x == x && t.y == y)
+                {
+                    occupiedByAlly = true;
+                    break;
+                }
+            if (occupiedByAlly)
+                continue;
+
+            if (allyOnStraightPath(src_x, src_y, x, y, trolls, selfId))
+                continue;
+
+            if (d < bestDist)
+            {
+                bestDist = d;
+                best.x = x;
+                best.y = y;
+            }
         }
-
-    if (!anyBlocked)
-    {
-        Position none;
-        none.x = -1;
-        none.y = -1;
-        return none;
     }
 
-    // Prefer a free primary step
-    for (const auto &p : primary)
-        if (!blocked(p))
-            return p;
-
-    // All primary steps blocked – try remaining adjacent cells as fallback
-    set<pair<int, int>> primarySet;
-    for (const auto &p : primary)
-        primarySet.insert({p.x, p.y});
-
-    Position adj[4] = {{sx + 1, sy}, {sx - 1, sy}, {sx, sy + 1}, {sx, sy - 1}};
-    for (const auto &p : adj)
-    {
-        if (primarySet.count({p.x, p.y}))
-            continue;
-        if (!blocked(p))
-            return p;
-    }
-
-    Position none;
-    none.x = -1;
-    none.y = -1;
-    return none;
+    return best;
 }
 
 bool generateBestTrollStats(
@@ -707,6 +686,8 @@ void parseMap(int w, int h, vector<string> &grid)
 
         for (int x = 0; x < w; x++)
         {
+            ::grid[y][x] = grid[y][x];
+
             if (grid[y][x] == '+')
             {
                 Position p;
@@ -809,8 +790,6 @@ int main()
         vector<Troll> enemyTrolls;
         vector<Troll> trolls = parseTrolls(myShack, enemyShack, enemyTrolls);
 
-        displayBfsFromRandomCell(w, h);
-
         assignTrollTasks(trolls);
 
         vector<string> actions;
@@ -823,32 +802,47 @@ int main()
         vector<string> filtered;
         for (const string &action : actions)
         {
-            if (action.substr(0, 4) == "MOVE")
+            if (action.substr(0, 4) != "MOVE")
             {
-                int trollId = stoi(action.substr(5));
-                int tx, ty;
-                sscanf(action.c_str(), "MOVE %*d %d %d", &tx, &ty);
-
-                const Troll *mover = nullptr;
-                for (const auto &t : trolls)
-                    if (t.id == trollId)
-                    {
-                        mover = &t;
-                        break;
-                    }
-
-                if (mover)
-                {
-                    Position redirect = findMoveRedirect(mover->x, mover->y, tx, ty, trolls, trollId, grid);
-                    if (redirect.x != -1)
-                    {
-                        cerr << "[MOVE REDIRECT] Troll " << trollId << " redirected to " << redirect.x << " " << redirect.y << endl;
-                        filtered.push_back("MOVE " + to_string(trollId) + " " + to_string(redirect.x) + " " + to_string(redirect.y));
-                        continue;
-                    }
-                }
+                filtered.push_back(action);
+                continue;
             }
-            filtered.push_back(action);
+
+            int trollId = stoi(action.substr(5));
+            int tx, ty;
+            sscanf(action.c_str(), "MOVE %*d %d %d", &tx, &ty);
+
+            const Troll *mover = nullptr;
+            for (const auto &t : trolls)
+                if (t.id == trollId)
+                {
+                    mover = &t;
+                    break;
+                }
+
+            if (!mover)
+            {
+                cerr << "Error: no troll found with id " << trollId << endl;
+                filtered.push_back(action);
+                continue;
+            }
+
+            Position step = pickMoveTarget(mover->x, mover->y, tx, ty,
+                                           mover->movementSpeed,
+                                           trolls, trollId, w, h);
+
+            if (step.x == -1)
+            {
+                cerr << "[MOVE REDIRECT] Troll " << trollId << " cannot move toward (" << tx << "," << ty << ") because all nearby cells are occupied, redirecting to original target" << endl;
+                filtered.push_back(action);
+                continue;
+            }
+
+            cerr << "[MOVE REWRITE] Troll " << trollId
+                 << " step (" << step.x << "," << step.y
+                 << ") toward (" << tx << "," << ty << ")" << endl;
+            filtered.push_back("MOVE " + to_string(trollId) + " " +
+                               to_string(step.x) + " " + to_string(step.y));
         }
 
         for (int i = 0; i < (int)filtered.size(); i++)
