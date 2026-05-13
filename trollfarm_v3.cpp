@@ -50,6 +50,45 @@ public:
 };
 
 // =====================================================
+// ACTION
+// =====================================================
+
+struct Action
+{
+    enum Type { MOVE, HARVEST, PLANT, CHOP, PICK, DROP, TRAIN, MINE };
+    Type type;
+    int id = 0;
+    int x = 0, y = 0;
+    string resource;
+    int moveSpeed = 0, carryCapacity = 0, harvestPower = 0, chopPower = 0;
+
+    static Action move(int id, int x, int y)                            { return {MOVE, id, x, y}; }
+    static Action harvest(int id)                                       { return {HARVEST, id}; }
+    static Action plant(int id, const string &res)                      { return {PLANT, id, 0, 0, res}; }
+    static Action chop(int id)                                          { return {CHOP, id}; }
+    static Action pick(int id, const string &res)                       { return {PICK, id, 0, 0, res}; }
+    static Action drop(int id)                                          { return {DROP, id}; }
+    static Action train(int ms, int cc, int hp, int cp)                 { return {TRAIN, 0, 0, 0, "", ms, cc, hp, cp}; }
+    static Action mine(int id)                                          { return {MINE, id}; }
+
+    string toString() const
+    {
+        switch (type)
+        {
+        case MOVE:    return "MOVE " + to_string(id) + " " + to_string(x) + " " + to_string(y);
+        case HARVEST: return "HARVEST " + to_string(id);
+        case PLANT:   return "PLANT " + to_string(id) + " " + resource;
+        case CHOP:    return "CHOP " + to_string(id);
+        case PICK:    return "PICK " + to_string(id) + " " + resource;
+        case DROP:    return "DROP " + to_string(id);
+        case TRAIN:   return "TRAIN " + to_string(moveSpeed) + " " + to_string(carryCapacity) + " " + to_string(harvestPower) + " " + to_string(chopPower);
+        case MINE:    return "MINE " + to_string(id);
+        }
+        return "";
+    }
+};
+
+// =====================================================
 // GLOBAL HELPERS
 // =====================================================
 
@@ -58,9 +97,9 @@ int manhattan(int x1, int y1, int x2, int y2)
     return abs(x1 - x2) + abs(y1 - y2);
 }
 
-void emitAction(vector<string> &actions, const string &action)
+void emitAction(vector<Action> &actions, Action action)
 {
-    cerr << "[ACTION] " << action << endl;
+    cerr << "[ACTION] " << action.toString() << endl;
     actions.push_back(action);
 }
 
@@ -225,18 +264,12 @@ public:
     }
 
     void handleReturn(const Shack &shack,
-                      vector<string> &actions) const
+                      vector<Action> &actions) const
     {
         if (manhattan(x, y, shack.x, shack.y) <= 1)
-        {
-            emitAction(actions, "DROP " + to_string(id));
-        }
+            emitAction(actions, Action::drop(id));
         else
-        {
-            emitAction(actions,
-                       "MOVE " + to_string(id) + " " +
-                           to_string(shack.x) + " " + to_string(shack.y));
-        }
+            emitAction(actions, Action::move(id, shack.x, shack.y));
     }
 };
 
@@ -329,7 +362,7 @@ Position pickMoveTarget(int src_x, int src_y, int dst_x, int dst_y, int speed,
 bool generateBestTrollStats(
     const vector<Troll> &existing,
     const Shack &myShack,
-    vector<string> &actions)
+    vector<Action> &actions)
 {
     int n = (int)existing.size();
 
@@ -381,14 +414,7 @@ bool generateBestTrollStats(
     if (bestMs == 0 || bestCc == 0 || (bestHp == 0 && bestCp == 0))
         return false;
 
-    string action =
-        "TRAIN " +
-        to_string(bestMs) + " " +
-        to_string(bestCc) + " " +
-        to_string(bestHp) + " " +
-        to_string(bestCp);
-
-    emitAction(actions, action);
+    emitAction(actions, Action::train(bestMs, bestCc, bestHp, bestCp));
     return true;
 }
 
@@ -476,7 +502,7 @@ bool chopEnemyTrees(
     const Shack &myShack,
     const Shack &enemyShack,
     const vector<Tree> &trees,
-    vector<string> &actions)
+    vector<Action> &actions)
 {
     cerr << "chopEnemyTrees(): Troll " << t.id << "[" << t.task << "] should chop enemy tree with capacity of " << t.carried() << "/" << t.carryCapacity << endl;
 
@@ -492,13 +518,11 @@ bool chopEnemyTrees(
 
     if (t.x == tr->x && t.y == tr->y)
     {
-        emitAction(actions, "CHOP " + to_string(t.id));
+        emitAction(actions, Action::chop(t.id));
     }
     else
     {
-        emitAction(actions,
-                   "MOVE " + to_string(t.id) + " " +
-                       to_string(tr->x) + " " + to_string(tr->y));
+        emitAction(actions, Action::move(t.id, tr->x, tr->y));
     }
 
     return true;
@@ -524,17 +548,16 @@ string pickableFruit(const Shack &shack)
 bool pickFruitFromShack(
     const Troll &t,
     const Shack &myShack,
-    vector<string> &actions)
+    vector<Action> &actions)
 {
     string fruitType = pickableFruit(myShack);
     if (fruitType.empty())
         return false;
 
     if (manhattan(t.x, t.y, myShack.x, myShack.y) <= 1)
-        emitAction(actions, "PICK " + to_string(t.id) + " " + fruitType);
+        emitAction(actions, Action::pick(t.id, fruitType));
     else
-        emitAction(actions, "MOVE " + to_string(t.id) + " " +
-                                to_string(myShack.x) + " " + to_string(myShack.y));
+        emitAction(actions, Action::move(t.id, myShack.x, myShack.y));
     return true;
 }
 
@@ -565,7 +588,7 @@ bool plant(
     const Troll &t,
     const vector<Tree> &trees,
     const Shack &shack,
-    vector<string> &actions)
+    vector<Action> &actions)
 {
     string type;
 
@@ -580,7 +603,7 @@ bool plant(
     else
         return false;
 
-    emitAction(actions, "PLANT " + to_string(t.id) + " " + type);
+    emitAction(actions, Action::plant(t.id, type));
     return true;
 }
 
@@ -624,7 +647,7 @@ void plantAndChopTrees(
     const Shack &myShack,
     const Shack &enemyShack,
     const vector<Tree> &trees,
-    vector<string> &actions)
+    vector<Action> &actions)
 {
     cerr << "plantAndChopTrees(): Troll " << t.id << "[" << t.task << "] carry=" << t.carried() << "/" << t.carryCapacity << " | wood=" << t.carryWood << endl;
 
@@ -632,7 +655,7 @@ void plantAndChopTrees(
     for (const auto &tr : trees)
         if (tr.x == t.x && tr.y == t.y)
         {
-            emitAction(actions, "CHOP " + to_string(t.id));
+            emitAction(actions, Action::chop(t.id));
             return;
         }
 
@@ -661,8 +684,7 @@ void plantAndChopTrees(
     {
         Position target = findPlantSpot(myShack, trees);
         if (target.x != -1)
-            emitAction(actions, "MOVE " + to_string(t.id) + " " +
-                                    to_string(target.x) + " " + to_string(target.y));
+            emitAction(actions, Action::move(t.id, target.x, target.y));
         else
             chopEnemyTrees(trolls, t, myShack, enemyShack, trees, actions);
     }
@@ -678,7 +700,7 @@ void playTrolls(
     vector<Tree> &trees,
     Shack &myShack,
     Shack &enemyShack,
-    vector<string> &actions)
+    vector<Action> &actions)
 {
     for (int i = 0; i < (int)trolls.size(); i++)
     {
@@ -772,6 +794,69 @@ void parseTrolls(State &state)
 }
 
 // =====================================================
+// ACTION OUTPUT
+// =====================================================
+
+vector<Action> transformMoveActions(const vector<Action> &actions, const vector<Troll> &trolls, int w, int h)
+{
+    vector<Action> filtered;
+    for (const Action &action : actions)
+    {
+        if (action.type != Action::MOVE)
+        {
+            filtered.push_back(action);
+            continue;
+        }
+
+        int trollId = action.id;
+        int tx = action.x, ty = action.y;
+
+        const Troll *mover = nullptr;
+        for (const auto &t : trolls)
+            if (t.id == trollId)
+            {
+                mover = &t;
+                break;
+            }
+
+        if (!mover)
+        {
+            cerr << "Error: no troll found with id " << trollId << endl;
+            filtered.push_back(action);
+            continue;
+        }
+
+        Position step = pickMoveTarget(mover->x, mover->y, tx, ty,
+                                       mover->movementSpeed,
+                                       trolls, trollId, w, h);
+
+        if (step.x == -1)
+        {
+            cerr << "[MOVE REDIRECT] Troll " << trollId << " cannot move toward (" << tx << "," << ty << ") because all nearby cells are occupied, redirecting to original target" << endl;
+            filtered.push_back(action);
+            continue;
+        }
+
+        cerr << "[MOVE REWRITE] Troll " << trollId
+             << " step (" << step.x << "," << step.y
+             << ") toward (" << tx << "," << ty << ")" << endl;
+        filtered.push_back(Action::move(trollId, step.x, step.y));
+    }
+    return filtered;
+}
+
+void displayActions(const vector<Action> &actions)
+{
+    for (int i = 0; i < (int)actions.size(); i++)
+    {
+        cout << actions[i].toString();
+        if (i + 1 < (int)actions.size())
+            cout << ";";
+    }
+    cout << endl;
+}
+
+// =====================================================
 // MAIN
 // =====================================================
 
@@ -804,65 +889,14 @@ int main()
 
         assignTrollTasks(state.trolls);
 
-        vector<string> actions;
+        vector<Action> actions;
 
         if (state.trolls.size() < 2)
             generateBestTrollStats(state.trolls, state.myShack, actions);
 
         playTrolls(state.trolls, state.enemyTrolls, state.trees, state.myShack, state.enemyShack, actions);
 
-        vector<string> filtered;
-        for (const string &action : actions)
-        {
-            if (action.substr(0, 4) != "MOVE")
-            {
-                filtered.push_back(action);
-                continue;
-            }
-
-            int trollId = stoi(action.substr(5));
-            int tx, ty;
-            sscanf(action.c_str(), "MOVE %*d %d %d", &tx, &ty);
-
-            const Troll *mover = nullptr;
-            for (const auto &t : state.trolls)
-                if (t.id == trollId)
-                {
-                    mover = &t;
-                    break;
-                }
-
-            if (!mover)
-            {
-                cerr << "Error: no troll found with id " << trollId << endl;
-                filtered.push_back(action);
-                continue;
-            }
-
-            Position step = pickMoveTarget(mover->x, mover->y, tx, ty,
-                                           mover->movementSpeed,
-                                           state.trolls, trollId, w, h);
-
-            if (step.x == -1)
-            {
-                cerr << "[MOVE REDIRECT] Troll " << trollId << " cannot move toward (" << tx << "," << ty << ") because all nearby cells are occupied, redirecting to original target" << endl;
-                filtered.push_back(action);
-                continue;
-            }
-
-            cerr << "[MOVE REWRITE] Troll " << trollId
-                 << " step (" << step.x << "," << step.y
-                 << ") toward (" << tx << "," << ty << ")" << endl;
-            filtered.push_back("MOVE " + to_string(trollId) + " " +
-                               to_string(step.x) + " " + to_string(step.y));
-        }
-
-        for (int i = 0; i < (int)filtered.size(); i++)
-        {
-            cout << filtered[i];
-            if (i + 1 < (int)filtered.size())
-                cout << ";";
-        }
-        cout << endl;
+        vector<Action> filtered = transformMoveActions(actions, state.trolls, w, h);
+        displayActions(filtered);
     }
 }
