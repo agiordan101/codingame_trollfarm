@@ -1143,16 +1143,19 @@ float mcts(Node *node)
         childId = selectUnexpandedChild(node);
         childNode = expand(node, childId);
         childValue = heuristic(childNode->state);
+
+        childNode->visits++;
+        childNode->score += childValue;
     }
     else
     {
         childId = selectChild(node);
         childNode = node->children[childId];
         childValue = mcts(childNode);
-    }
 
-    node->visits++;
-    node->score += childValue;
+        node->visits++;
+        node->score += childValue;
+    }
 
     return childValue;
 }
@@ -1186,7 +1189,14 @@ ActionSet runMCTS(const State &rootState)
     for (int i = 0; i < (int)root->children.size(); i++)
     {
         Node *c = root->children[i];
-        if (c && c->visits > bestVisits)
+        ActionSet &as = root->actionSets[i];
+
+        cerr << "ActionSet " << i << ": visits=" << (c->visits) << " score=" << (c->score) << " | Actions :";
+        for (const auto &a : as.actions)
+            cerr << " " << a.toString();
+        cerr << endl;
+
+        if (c->visits > bestVisits)
         {
             bestVisits = c->visits;
             bestIdx = i;
