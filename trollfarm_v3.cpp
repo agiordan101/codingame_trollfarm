@@ -35,7 +35,10 @@
         - Faire un macro-MCTS en ajoutant des macro actions. Soit un séquence défini de k actions qui termine sur un état à t+k tours
             Macro actions possibles (Sont suivis par une action primitive) :
             - Troll X MOVE à un tree, pour ensuite CHOP tout l'arbre
-            - Troll X MOVE à un tree, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+            - Troll X MOVE à un tree PLUM, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+            - Troll X MOVE à un tree LEMON, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+            - Troll X MOVE à un tree APPLE, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+            - Troll X MOVE à un tree BANANA, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
             - Troll X MOVE à une mine, pour ensuite MINE jusqu'a ce qu'il soit plein
             - Troll X MOVE au shack allié, pour ensuite PICK un fruit
             - Troll X MOVE au shack allié, pour ensuite DROP ce qu'il carry
@@ -189,7 +192,7 @@ void buildBfsLookup(int w, int h, const char g[][MAX_MAP_WIDTH])
         for (int sx = 0; sx < w; sx++)
         {
             // If the cell is not walkable and isn't a shack, we won't be able to stand on it so we can skip BFS from it
-            if (!isCellWalkable(g[sy][sx]) && g[sy][sx] != '0' && g[sy][sx] != '2')
+            if (!isCellWalkable(g[sy][sx]) && g[sy][sx] != '0' && g[sy][sx] != '1')
                 continue;
 
             bfs_dist_lookup[sy][sx][sy][sx] = 0;
@@ -268,7 +271,7 @@ public:
             size++;
             health += (newMax - oldMax);
         }
-        else
+        else if (fruits < 3)
         {
             fruits++;
         }
@@ -283,8 +286,6 @@ public:
         static constexpr int APPLE[5] = {0, 11, 14, 17, 20};
         static constexpr int BANANA[5] = {0, 3, 4, 5, 6};
 
-        if (size < 1 || size > 4)
-            return 0;
         if (type == "PLUM" || type == "LEMON")
             return PLUM_LEMON[size];
         if (type == "APPLE")
@@ -533,7 +534,7 @@ private:
         if (onTree)
         {
             // HARVEST: on tree with fruits and carry capacity available
-            if (t.harvestPower > 0 && onTree->fruits > 0)
+            if (onTree->fruits > 0 && t.harvestPower > 0 && t.canCarry())
                 actions.push_back(Action::harvest(t.id, t.player));
         }
         else
@@ -605,10 +606,11 @@ public:
         // Filter impossible combinations
         result.erase(
             remove_if(result.begin(), result.end(),
-                [&](const ActionSet &as) { return !isValidActionSet(as, playerTrolls); }),
+                      [&](const ActionSet &as)
+                      { return !isValidActionSet(as, playerTrolls); }),
             result.end());
 
-        // If TRAIN is possible, duplicate each ActionSet with TRAIN appended
+        // If TRAIN is possible, append it to every ActionSet
         int n = (int)playerTrolls.size();
         if (shack.plum >= n + 4 &&
             shack.lemon >= n + 4 &&
@@ -616,36 +618,11 @@ public:
             shack.iron >= n + 4)
         {
             Action trainAction = Action::train(player, 2, 2, 2, 2);
-            int sz = (int)result.size();
-            for (int i = 0; i < sz; i++)
-            {
-                ActionSet withTrain = result[i];
-                withTrain.actions.push_back(trainAction);
-                result.push_back(move(withTrain));
-            }
+            for (ActionSet &as : result)
+                as.actions.push_back(trainAction);
         }
 
         return result;
-    }
-
-    vector<Action> generatePossibleActions(int player) const
-    {
-        const vector<Troll> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
-        const Shack &shack = (player == 0) ? myShack : enemyShack;
-
-        vector<Action> actions;
-        for (const Troll &t : playerTrolls)
-            generateTrollActions(t, shack, playerTrolls, actions);
-
-        // TRAIN: fixed stats (2, 2, 1, 2)
-        int n = (int)playerTrolls.size();
-        if (shack.plum >= n + 4 &&
-            shack.lemon >= n + 4 &&
-            shack.apple >= n + 1 &&
-            shack.iron >= n + 4)
-            actions.push_back(Action::train(player, 2, 2, 1, 2));
-
-        return actions;
     }
 
     void applyActions(const vector<Action> &actions)
@@ -688,6 +665,22 @@ public:
 
         // 9. Trees grow
         updateTrees();
+    }
+
+    bool isNearWater(int x, int y) const
+    {
+        constexpr int dxs[4] = {1, -1, 0, 0};
+        constexpr int dys[4] = {0, 0, 1, -1};
+        for (int k = 0; k < 4; k++)
+        {
+            int nx = x + dxs[k];
+            int ny = y + dys[k];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                continue;
+            if (grid[ny][nx] == '~')
+                return true;
+        }
+        return false;
     }
 
 private:
@@ -990,22 +983,6 @@ private:
                 trees.erase(trees.begin() + i);
     }
 
-    bool isNearWater(int x, int y) const
-    {
-        constexpr int dxs[4] = {1, -1, 0, 0};
-        constexpr int dys[4] = {0, 0, 1, -1};
-        for (int k = 0; k < 4; k++)
-        {
-            int nx = x + dxs[k];
-            int ny = y + dys[k];
-            if (nx < 0 || nx >= w || ny < 0 || ny >= h)
-                continue;
-            if (grid[ny][nx] == '~')
-                return true;
-        }
-        return false;
-    }
-
     void updateTrees()
     {
         for (Tree &tree : trees)
@@ -1055,14 +1032,65 @@ void resetNodePool() { nodeCount = 0; }
 // evaluation when ready (tree counts, troll positioning, carried fruit, etc.).
 float heuristic(const State &s)
 {
+    // Compute game points
     float myRes = s.myShack.plum + s.myShack.lemon + s.myShack.apple +
-                  s.myShack.banana + s.myShack.iron + s.myShack.wood;
+                  s.myShack.banana + 4 * s.myShack.wood;
     float enRes = s.enemyShack.plum + s.enemyShack.lemon + s.enemyShack.apple +
-                  s.enemyShack.banana + s.enemyShack.iron + s.enemyShack.wood;
+                  s.enemyShack.banana + 4 * s.enemyShack.wood;
+
+    // Set each troll as 50 game points (arbitrary, just to value having more trolls on the board)
+    for (const auto &t : s.trolls)
+        myRes += 50;
+    for (const auto &t : s.enemyTrolls)
+        enRes += 50;
+
+    for (const auto &t : s.trolls)
+    {
+        int dist = bfs_dist_lookup[s.myShack.y][s.myShack.x][t.y][t.x];
+        if (dist <= 0)
+            dist = 20; // High value
+
+        // Weight carried fruits depending on the distance with its shacks
+        myRes += 1 / dist * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron + 4 * t.carryWood);
+    }
+    for (const auto &t : s.enemyTrolls)
+    {
+        int dist = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][t.y][t.x];
+        if (dist <= 0)
+            dist = 20; // High value
+        enRes += 1 / dist * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron + 4 * t.carryWood);
+    }
+
+    // Score trees in [0,0.5] based on position relative to both shacks.
+    // A tree closer to our shack is good for us (we can chop/harvest it faster), while a tree closer to enemy shack is bad for them (they can chop/harvest it faster).
+    // We add the net value to myRes so the difference myRes-enRes reflects tree map control.
+    for (const auto &tree : s.trees)
+    {
+        int dMy = bfs_dist_lookup[s.myShack.y][s.myShack.x][tree.y][tree.x];
+        int dEn = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][tree.y][tree.x];
+        if (dMy <= 0 || dEn <= 0)
+            continue;
+
+        // Normalize: ratio of enemy distance vs total distance, in [0,0.5].
+        // 0.5 = equidistant (neutral), >0.25 = Closest to our shack (good), <0.25 = closest to enemy shack (bad).
+        float myTreeScore = 0.5f * (float)dEn / (float)(dMy + dEn + 1);
+        float enTreeScore = 0.5f - myTreeScore;
+
+        if (s.isNearWater(tree.x, tree.y))
+        {
+            myTreeScore *= 2;
+            enTreeScore *= 2;
+        }
+
+        myRes += myTreeScore;
+        enRes += enTreeScore;
+    }
+
     return myRes - enRes;
 }
 
-constexpr float UCT_C = 1.41421356f;
+constexpr float UCT_C = 1.5;
+// constexpr float UCT_C = 1.41421356f;
 
 int selectUnexpandedChild(Node *node)
 {
@@ -1191,9 +1219,9 @@ ActionSet runMCTS(const State &rootState)
         Node *c = root->children[i];
         ActionSet &as = root->actionSets[i];
 
-        cerr << "ActionSet " << i << ": visits=" << (c->visits) << " score=" << (c->score) << " | Actions :";
+        cerr << "ActionSet " << i << ": visits=" << (c->visits) << " quality=" << (c->score / c->visits) << " | Actions :";
         for (const auto &a : as.actions)
-            cerr << " " << a.toString();
+            cerr << " | " << a.toString();
         cerr << endl;
 
         if (c->visits > bestVisits)
