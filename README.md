@@ -6,9 +6,7 @@ Spring Challenge 2026
 
 ## v3 - Basic naive MCTS
 
-League: Bronze (max)
-<!-- Last moment in arena: 100/477 -->
-First moment in arena: 40/700
+Really bad. Not enoug iterations and long term vision
 
 ## v2.1 - Chop warrior & Chop scaler with real pathfinding
 

@@ -431,6 +431,7 @@ public:
 class State
 {
 public:
+    int turn = 1;
     int w = 0, h = 0;
     char grid[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
     Shack myShack;
@@ -665,6 +666,7 @@ public:
 
         // 9. Trees grow
         updateTrees();
+        turn++;
     }
 
     bool isNearWater(int x, int y) const
@@ -1028,10 +1030,21 @@ Node *allocNode()
 
 void resetNodePool() { nodeCount = 0; }
 
+float mapRange(float value, float inputMin, float inputMax, float outputMin, float outputMax)
+{
+    float t = (value - inputMin) / (inputMax - inputMin);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t * (outputMax - outputMin) + outputMin;
+};
+
 // Placeholder heuristic: resource differential. Replace with a domain-specific
 // evaluation when ready (tree counts, troll positioning, carried fruit, etc.).
 float heuristic(const State &s)
 {
+    constexpr int CHOPPING_TURN = 100;
+    constexpr int MAX_TURN = 300;
+
     // Compute game points
     float myRes = s.myShack.plum + s.myShack.lemon + s.myShack.apple +
                   s.myShack.banana + 4 * s.myShack.wood;
@@ -1051,14 +1064,22 @@ float heuristic(const State &s)
             dist = 20; // High value
 
         // Weight carried fruits depending on the distance with its shacks
-        myRes += 1 / dist * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron + 4 * t.carryWood);
+        // 50% of shack value by default
+        // And go to 99% when next to shack
+        int ressourceValue = 0.5f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 2 * t.carryWood;
+        myRes += ressourceValue + (ressourceValue / (1.1 * dist));
     }
     for (const auto &t : s.enemyTrolls)
     {
         int dist = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][t.y][t.x];
         if (dist <= 0)
             dist = 20; // High value
-        enRes += 1 / dist * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron + 4 * t.carryWood);
+
+        // Weight carried fruits depending on the distance with its shack
+        // 50% of shack value by default
+        // And go to 99% when next to shack
+        int ressourceValue = 0.5f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 2 * t.carryWood;
+        enRes += ressourceValue + (ressourceValue / (1.1 * dist));
     }
 
     // Score trees in [0,0.5] based on position relative to both shacks.
@@ -1071,19 +1092,16 @@ float heuristic(const State &s)
         if (dMy <= 0 || dEn <= 0)
             continue;
 
-        // Normalize: ratio of enemy distance vs total distance, in [0,0.5].
-        // 0.5 = equidistant (neutral), >0.25 = Closest to our shack (good), <0.25 = closest to enemy shack (bad).
-        float myTreeScore = 0.5f * (float)dEn / (float)(dMy + dEn + 1);
-        float enTreeScore = 0.5f - myTreeScore;
-
+        float treeScore = 2;
         if (s.isNearWater(tree.x, tree.y))
-        {
-            myTreeScore *= 2;
-            enTreeScore *= 2;
-        }
+            treeScore *= 1.5;
 
-        myRes += myTreeScore;
-        enRes += enTreeScore;
+        if (s.turn > CHOPPING_TURN)
+            treeScore *= mapRange(s.turn, CHOPPING_TURN, MAX_TURN, 1.0f, 0);
+
+        // Tree score only adds to myRes to encourage planting trees
+        myRes += treeScore / dMy;
+        enRes += treeScore / dEn;
     }
 
     return myRes - enRes;
