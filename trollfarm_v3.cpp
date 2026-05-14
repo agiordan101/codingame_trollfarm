@@ -27,13 +27,13 @@
                 * 1.2 if next to water
         - When trolls count = 3 -> Plant on all cells with d<=2 ??
         - Do NOT plant trees if shacks distance is <= 5
-    
+
 
     Algorithm :
         - Faire un MCTS classique avec une heuristic.
         - Faire un macro-MCTS en ajoutant des macro actions. Soit un séquence défini de k actions qui termine sur un état à t+k tours
         - Tester un HMCTS-OP avec le graph MAXQ suivant :
-        
+
 */
 
 using namespace std;
@@ -55,34 +55,52 @@ public:
 
 struct Action
 {
-    enum Type { MOVE, HARVEST, PLANT, CHOP, PICK, DROP, TRAIN, MINE };
+    enum Type
+    {
+        MOVE,
+        HARVEST,
+        PLANT,
+        CHOP,
+        PICK,
+        DROP,
+        TRAIN,
+        MINE
+    };
     Type type;
     int id = 0;
     int x = 0, y = 0;
     string resource;
     int moveSpeed = 0, carryCapacity = 0, harvestPower = 0, chopPower = 0;
 
-    static Action move(int id, int x, int y)                            { return {MOVE, id, x, y}; }
-    static Action harvest(int id)                                       { return {HARVEST, id}; }
-    static Action plant(int id, const string &res)                      { return {PLANT, id, 0, 0, res}; }
-    static Action chop(int id)                                          { return {CHOP, id}; }
-    static Action pick(int id, const string &res)                       { return {PICK, id, 0, 0, res}; }
-    static Action drop(int id)                                          { return {DROP, id}; }
-    static Action train(int ms, int cc, int hp, int cp)                 { return {TRAIN, 0, 0, 0, "", ms, cc, hp, cp}; }
-    static Action mine(int id)                                          { return {MINE, id}; }
+    static Action move(int id, int x, int y) { return {MOVE, id, x, y}; }
+    static Action harvest(int id) { return {HARVEST, id}; }
+    static Action plant(int id, const string &res) { return {PLANT, id, 0, 0, res}; }
+    static Action chop(int id) { return {CHOP, id}; }
+    static Action pick(int id, const string &res) { return {PICK, id, 0, 0, res}; }
+    static Action drop(int id) { return {DROP, id}; }
+    static Action train(int player, int ms, int cc, int hp, int cp) { return {TRAIN, player, 0, 0, "", ms, cc, hp, cp}; }
+    static Action mine(int id) { return {MINE, id}; }
 
     string toString() const
     {
         switch (type)
         {
-        case MOVE:    return "MOVE " + to_string(id) + " " + to_string(x) + " " + to_string(y);
-        case HARVEST: return "HARVEST " + to_string(id);
-        case PLANT:   return "PLANT " + to_string(id) + " " + resource;
-        case CHOP:    return "CHOP " + to_string(id);
-        case PICK:    return "PICK " + to_string(id) + " " + resource;
-        case DROP:    return "DROP " + to_string(id);
-        case TRAIN:   return "TRAIN " + to_string(moveSpeed) + " " + to_string(carryCapacity) + " " + to_string(harvestPower) + " " + to_string(chopPower);
-        case MINE:    return "MINE " + to_string(id);
+        case MOVE:
+            return "MOVE " + to_string(id) + " " + to_string(x) + " " + to_string(y);
+        case HARVEST:
+            return "HARVEST " + to_string(id);
+        case PLANT:
+            return "PLANT " + to_string(id) + " " + resource;
+        case CHOP:
+            return "CHOP " + to_string(id);
+        case PICK:
+            return "PICK " + to_string(id) + " " + resource;
+        case DROP:
+            return "DROP " + to_string(id);
+        case TRAIN:
+            return "TRAIN " + to_string(moveSpeed) + " " + to_string(carryCapacity) + " " + to_string(harvestPower) + " " + to_string(chopPower);
+        case MINE:
+            return "MINE " + to_string(id);
         }
         return "";
     }
@@ -111,6 +129,8 @@ constexpr int MAX_MAP_HEIGHT = 11;
 constexpr int MAX_MAP_WIDTH = 2 * MAX_MAP_HEIGHT;
 
 int bfs_dist_lookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH][MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+
+static vector<Position> ironMines;
 
 bool isCellWalkable(char c)
 {
@@ -196,6 +216,62 @@ public:
     int health;
     int fruits;
     int cooldown;
+
+    void grow(bool nearWater)
+    {
+        if (cooldown > 0)
+        {
+            cooldown--;
+            return;
+        }
+
+        if (size < 4)
+        {
+            int oldMax = healthFromSize(type, size);
+            int newMax = healthFromSize(type, size + 1);
+            size++;
+            health += (newMax - oldMax);
+        }
+        else
+        {
+            fruits++;
+        }
+
+        cooldown = cooldownFromType(type, nearWater);
+    }
+
+    static int healthFromSize(const string &type, int size)
+    {
+        // Indexed by size 1..4
+        static constexpr int PLUM_LEMON[5] = {0,  6,  8, 10, 12};
+        static constexpr int APPLE[5]      = {0, 11, 14, 17, 20};
+        static constexpr int BANANA[5]     = {0,  3,  4,  5,  6};
+
+        if (size < 1 || size > 4) return 0;
+        if (type == "PLUM" || type == "LEMON") return PLUM_LEMON[size];
+        if (type == "APPLE")                   return APPLE[size];
+        if (type == "BANANA")                  return BANANA[size];
+        return 0;
+    }
+
+    static int cooldownFromType(const string &type, bool nearWater)
+    {
+        if (nearWater)
+        {
+            if (type == "PLUM")   return 3;
+            if (type == "LEMON")  return 3;
+            if (type == "APPLE")  return 2;
+            if (type == "BANANA") return 4;
+        }
+        else
+        {
+            if (type == "PLUM")   return 8;
+            if (type == "LEMON")  return 8;
+            if (type == "APPLE")  return 9;
+            if (type == "BANANA") return 6;
+        }
+        return 0;
+    }
 };
 
 // =====================================================
@@ -208,6 +284,15 @@ public:
     int x = -1;
     int y = -1;
     int plum, lemon, apple, banana, iron, wood;
+
+    int *fruitField(const string &type)
+    {
+        if (type == "PLUM")   return &plum;
+        if (type == "LEMON")  return &lemon;
+        if (type == "APPLE")  return &apple;
+        if (type == "BANANA") return &banana;
+        return nullptr;
+    }
 };
 
 // =====================================================
@@ -263,6 +348,15 @@ public:
         return carryCapacity - carried();
     }
 
+    int *fruitField(const string &type)
+    {
+        if (type == "PLUM")   return &carryPlum;
+        if (type == "LEMON")  return &carryLemon;
+        if (type == "APPLE")  return &carryApple;
+        if (type == "BANANA") return &carryBanana;
+        return nullptr;
+    }
+
     void handleReturn(const Shack &shack,
                       vector<Action> &actions) const
     {
@@ -295,7 +389,7 @@ bool allyOnStraightPath(int src_x, int src_y, int dst_x, int dst_y,
             if (t.x == cx && t.y == cy)
                 return true;
         }
-        
+
         cx += dx;
         cy += dy;
         if (cx == dst_x && cy == dst_y)
@@ -414,7 +508,7 @@ bool generateBestTrollStats(
     if (bestMs == 0 || bestCc == 0 || (bestHp == 0 && bestCp == 0))
         return false;
 
-    emitAction(actions, Action::train(bestMs, bestCc, bestHp, bestCp));
+    emitAction(actions, Action::train(0, bestMs, bestCc, bestHp, bestCp));
     return true;
 }
 
@@ -444,21 +538,495 @@ void assignTrollTasks(vector<Troll> &trolls)
 // STATE
 // =====================================================
 
-struct State
+class State
 {
+public:
+    int w = 0, h = 0;
     char grid[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
     Shack myShack;
     Shack enemyShack;
     vector<Tree> trees;
     vector<Troll> trolls;
     vector<Troll> enemyTrolls;
+
+private:
+    void generateMoveActions(const Troll &t, const vector<Troll> &allies, vector<Action> &actions) const
+    {
+        for (int y = 0; y < h; y++)
+        {
+            for (int x = 0; x < w; x++)
+            {
+                int d = bfs_dist_lookup[t.y][t.x][y][x];
+                if (d < 1 || d > t.movementSpeed)
+                    continue;
+
+                bool occupied = false;
+                for (const auto &ally : allies)
+                {
+                    if (ally.id != t.id && ally.x == x && ally.y == y)
+                    {
+                        occupied = true;
+                        break;
+                    }
+                }
+                if (!occupied)
+                    actions.push_back(Action::move(t.id, x, y));
+            }
+        }
+    }
+
+    void generateTrollActions(const Troll &t, const Shack &shack, const vector<Troll> &allies, vector<Action> &actions) const
+    {
+        // MOVE: Walkable cells in move speed range, with no ally on it
+        generateMoveActions(t, allies, actions);
+
+        // MINE: troll is on an iron mine
+        for (const auto &mine : ironMines)
+        {
+            if (mine.x == t.x && mine.y == t.y)
+            {
+                if (t.chopPower > 0)
+                    actions.push_back(Action::mine(t.id));
+                break;
+            }
+        }
+
+        // CHOP: on tree
+        const Tree *onTree = nullptr;
+        for (const auto &tr : trees)
+        {
+            if (tr.x == t.x && tr.y == t.y)
+            {
+                onTree = &tr;
+
+                // No need for carrying capacity left: We could want to chop tree to deny it
+                if (t.chopPower > 0)
+                    actions.push_back(Action::chop(t.id));
+
+                break;
+            }
+        }
+
+        if (onTree)
+        {
+            // HARVEST: on tree with fruits and carry capacity available
+            if (t.harvestPower > 0 && onTree->fruits > 0)
+                actions.push_back(Action::harvest(t.id));
+        }
+        else
+        {
+            // PLANT: on grass with no tree under, for any fruit type carried
+            if (t.carryPlum > 0)
+                actions.push_back(Action::plant(t.id, "PLUM"));
+            if (t.carryLemon > 0)
+                actions.push_back(Action::plant(t.id, "LEMON"));
+            if (t.carryApple > 0)
+                actions.push_back(Action::plant(t.id, "APPLE"));
+            if (t.carryBanana > 0)
+                actions.push_back(Action::plant(t.id, "BANANA"));
+        }
+
+        if (manhattan(t.x, t.y, shack.x, shack.y) <= 1)
+        {
+            if (t.canCarry())
+            {
+                // PICK: when adjacent to own shack, carry capacity available and fruit is available in shack
+                if (shack.plum > 0)
+                    actions.push_back(Action::pick(t.id, "PLUM"));
+                if (shack.lemon > 0)
+                    actions.push_back(Action::pick(t.id, "LEMON"));
+                if (shack.apple > 0)
+                    actions.push_back(Action::pick(t.id, "APPLE"));
+                if (shack.banana > 0)
+                    actions.push_back(Action::pick(t.id, "BANANA"));
+            }
+
+            // DROP: adjacent to own shack, with something to drop
+            if (t.isCarrying())
+                actions.push_back(Action::drop(t.id));
+        }
+    }
+
+public:
+    vector<Action> generatePossibleActions(int player) const
+    {
+        const vector<Troll> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
+        const Shack &shack = (player == 0) ? myShack : enemyShack;
+
+        vector<Action> actions;
+        for (const Troll &t : playerTrolls)
+            generateTrollActions(t, shack, playerTrolls, actions);
+
+        // TRAIN: fixed stats (2, 2, 1, 2)
+        int n = (int)playerTrolls.size();
+        if (shack.plum >= n + 4 &&
+            shack.lemon >= n + 4 &&
+            shack.apple >= n + 1 &&
+            shack.iron >= n + 4)
+            actions.push_back(Action::train(player, 2, 2, 1, 2));
+
+        return actions;
+    }
+
+    void applyActions(const vector<Action> &actions)
+    {
+        // 1. MOVE
+        for (const Action &a : actions)
+            if (a.type == Action::MOVE)
+                applyMove(a);
+
+        // 2. HARVEST (simultaneous, fruit sharing)
+        applyHarvest(actions);
+
+        // 3. PLANT
+        for (const Action &a : actions)
+            if (a.type == Action::PLANT)
+                applyPlant(a);
+
+        // 4. CHOP (simultaneous, wood sharing)
+        applyChop(actions);
+
+        // 5. PICK
+        for (const Action &a : actions)
+            if (a.type == Action::PICK)
+                applyPick(a);
+
+        // 6. TRAIN
+        for (const Action &a : actions)
+            if (a.type == Action::TRAIN)
+                applyTrain(a);
+
+        // 7. DROP
+        for (const Action &a : actions)
+            if (a.type == Action::DROP)
+                applyDrop(a);
+
+        // 8. MINE
+        for (const Action &a : actions)
+            if (a.type == Action::MINE)
+                applyMine(a);
+
+        // 9. Trees grow
+        updateTrees();
+    }
+
+private:
+    Troll *findTrollById(int id)
+    {
+        for (auto &t : trolls)
+            if (t.id == id)
+                return &t;
+        for (auto &t : enemyTrolls)
+            if (t.id == id)
+                return &t;
+        return nullptr;
+    }
+
+    int findTreeIndex(int x, int y) const
+    {
+        for (int i = 0; i < (int)trees.size(); i++)
+            if (trees[i].x == x && trees[i].y == y)
+                return i;
+        return -1;
+    }
+
+    void applyMove(const Action &a)
+    {
+        Troll *t = findTrollById(a.id);
+        if (!t)
+            return;
+
+        const vector<Troll> &allies = (t->player == 0) ? trolls : enemyTrolls;
+        for (const Troll &ally : allies)
+            if (ally.id != t->id && ally.x == a.x && ally.y == a.y)
+                return;
+
+        t->x = a.x;
+        t->y = a.y;
+    }
+
+    void applyPlant(const Action &a)
+    {
+        Troll *t = findTrollById(a.id);
+        if (!t)
+            return;
+        int *fruit = t->fruitField(a.resource);
+        if (!fruit || *fruit <= 0)
+            return;
+        (*fruit)--;
+
+        Tree tree;
+        tree.type = a.resource;
+        tree.x = t->x;
+        tree.y = t->y;
+        tree.size = 1;
+        tree.health = Tree::healthFromSize(a.resource, 1);
+        tree.fruits = 0;
+        tree.cooldown = Tree::cooldownFromType(a.resource, isNearWater(t->x, t->y));
+
+        trees.push_back(tree);
+    }
+
+    void applyPick(const Action &a)
+    {
+        Troll *t = findTrollById(a.id);
+        if (!t || !t->canCarry())
+            return;
+        Shack &shack = (t->player == 0) ? myShack : enemyShack;
+        int *shackFruit = shack.fruitField(a.resource);
+        int *trollFruit = t->fruitField(a.resource);
+        if (!shackFruit || !trollFruit || *shackFruit <= 0)
+            return;
+        (*shackFruit)--;
+        (*trollFruit)++;
+    }
+
+    void applyDrop(const Action &a)
+    {
+        Troll *t = findTrollById(a.id);
+        if (!t)
+            return;
+        Shack &shack = (t->player == 0) ? myShack : enemyShack;
+        shack.plum   += t->carryPlum;   t->carryPlum = 0;
+        shack.lemon  += t->carryLemon;  t->carryLemon = 0;
+        shack.apple  += t->carryApple;  t->carryApple = 0;
+        shack.banana += t->carryBanana; t->carryBanana = 0;
+        shack.iron   += t->carryIron;   t->carryIron = 0;
+        shack.wood   += t->carryWood;   t->carryWood = 0;
+    }
+
+    void applyMine(const Action &a)
+    {
+        Troll *t = findTrollById(a.id);
+        if (!t)
+            return;
+        int amount = min(t->chopPower, t->remainingCarry());
+        if (amount > 0)
+            t->carryIron += amount;
+    }
+
+    void applyTrain(const Action &a)
+    {
+        // Should check if shack has enough resources because a troll can PICK items from the shack in the same turn
+        int player = a.id;
+        vector<Troll> &teamTrolls = (player == 0) ? trolls : enemyTrolls;
+        Shack &shack = (player == 0) ? myShack : enemyShack;
+
+        int n = (int)teamTrolls.size();
+        int costPlum  = n + a.moveSpeed * a.moveSpeed;
+        int costLemon = n + a.carryCapacity * a.carryCapacity;
+        int costApple = n + a.harvestPower * a.harvestPower;
+        int costIron  = n + a.chopPower * a.chopPower;
+
+        if (shack.plum < costPlum || shack.lemon < costLemon ||
+            shack.apple < costApple || shack.iron < costIron)
+            return;
+
+        shack.plum  -= costPlum;
+        shack.lemon -= costLemon;
+        shack.apple -= costApple;
+        shack.iron  -= costIron;
+
+        int nextId = 0;
+        for (const auto &t : trolls)      nextId = max(nextId, t.id);
+        for (const auto &t : enemyTrolls) nextId = max(nextId, t.id);
+        nextId++;
+
+        Troll nt;
+        nt.id = nextId;
+        nt.player = player;
+        nt.x = shack.x;
+        nt.y = shack.y;
+        nt.movementSpeed = a.moveSpeed;
+        nt.carryCapacity = a.carryCapacity;
+        nt.harvestPower  = a.harvestPower;
+        nt.chopPower     = a.chopPower;
+        nt.carryPlum = nt.carryLemon = nt.carryApple = 0;
+        nt.carryBanana = nt.carryIron = nt.carryWood = 0;
+        teamTrolls.push_back(nt);
+    }
+
+    void applyHarvest(const vector<Action> &actions)
+    {
+        // Bucket harvest actions by the tree they target (same cell as the troll)
+        vector<vector<int>> byTree(trees.size());
+        for (const Action &a : actions)
+        {
+            if (a.type != Action::HARVEST)
+                continue;
+            Troll *t = findTrollById(a.id);
+            if (!t)
+                continue;
+            int idx = findTreeIndex(t->x, t->y);
+            if (idx >= 0)
+                byTree[idx].push_back(t->id);
+        }
+
+        for (int idx = 0; idx < (int)trees.size(); idx++)
+        {
+            Tree &tree = trees[idx];
+            vector<int> &trollIds = byTree[idx];
+            if (trollIds.empty() || tree.fruits <= 0)
+                continue;
+
+            // Each troll may harvest up to harvestPower fruits this turn
+            vector<int> budgets;
+            for (int id : trollIds)
+                budgets.push_back(findTrollById(id)->harvestPower);
+
+            // Distribute one fruit per active troll per round until exhausted
+            while (tree.fruits > 0)
+            {
+                // Active = trolls who still have harvest budget and carry capacity
+                vector<int> active;
+                for (int i = 0; i < (int)trollIds.size(); i++)
+                {
+                    Troll *t = findTrollById(trollIds[i]);
+                    if (budgets[i] > 0 && t->canCarry())
+                        active.push_back(i);
+                }
+                if (active.empty())
+                    break;
+
+                // Last-fruit duplication: demand > supply -> everyone still gets one
+                if ((int)active.size() > tree.fruits)
+                {
+                    for (int i : active)
+                    {
+                        Troll *t = findTrollById(trollIds[i]);
+                        int *f = t->fruitField(tree.type);
+                        if (f) (*f)++;
+                        budgets[i]--;
+                    }
+                    tree.fruits = 0;
+                }
+                else
+                {
+                    // Normal round: each active troll grabs one fruit
+                    for (int i : active)
+                    {
+                        Troll *t = findTrollById(trollIds[i]);
+                        int *f = t->fruitField(tree.type);
+                        if (f) (*f)++;
+                        budgets[i]--;
+                    }
+                    tree.fruits -= (int)active.size();
+                }
+            }
+        }
+    }
+
+    void applyChop(const vector<Action> &actions)
+    {
+        // Bucket chop actions by the tree they target (same cell as the troll)
+        vector<vector<int>> byTree(trees.size());
+        for (const Action &a : actions)
+        {
+            if (a.type != Action::CHOP)
+                continue;
+            Troll *t = findTrollById(a.id);
+            if (!t)
+                continue;
+            int idx = findTreeIndex(t->x, t->y);
+            if (idx >= 0)
+                byTree[idx].push_back(t->id);
+        }
+
+        vector<bool> killed(trees.size(), false);
+        for (int idx = 0; idx < (int)trees.size(); idx++)
+        {
+            Tree &tree = trees[idx];
+            vector<int> &trollIds = byTree[idx];
+            if (trollIds.empty())
+                continue;
+
+            // All choppers hit simultaneously: sum their chopPower into the tree
+            int totalDmg = 0;
+            for (int id : trollIds)
+                totalDmg += findTrollById(id)->chopPower;
+            tree.health -= totalDmg;
+
+            // Tree survives this turn -> no wood drop
+            if (tree.health > 0)
+                continue;
+
+            killed[idx] = true;
+
+            // Tree dies: distribute tree.size wood among choppers
+            int wood = tree.size;
+
+            // Each chopper can collect up to its remaining carry capacity
+            vector<int> budgets;
+            for (int id : trollIds)
+                budgets.push_back(findTrollById(id)->remainingCarry());
+
+            // Distribute one wood per active troll per round until exhausted
+            while (wood > 0)
+            {
+                // Active = choppers who still have free carry capacity
+                vector<int> active;
+                for (int i = 0; i < (int)trollIds.size(); i++)
+                    if (budgets[i] > 0)
+                        active.push_back(i);
+                if (active.empty())
+                    break;
+
+                // Last-wood duplication: demand > supply -> everyone still gets one
+                if ((int)active.size() > wood)
+                {
+                    for (int i : active)
+                    {
+                        findTrollById(trollIds[i])->carryWood++;
+                        budgets[i]--;
+                    }
+                    wood = 0;
+                }
+                else
+                {
+                    // Normal round: each active troll grabs one wood
+                    for (int i : active)
+                    {
+                        findTrollById(trollIds[i])->carryWood++;
+                        budgets[i]--;
+                    }
+                    wood -= (int)active.size();
+                }
+            }
+        }
+
+        // Remove killed trees (back to front to keep indices valid)
+        for (int i = (int)trees.size() - 1; i >= 0; i--)
+            if (killed[i])
+                trees.erase(trees.begin() + i);
+    }
+
+
+    bool isNearWater(int x, int y) const
+    {
+        constexpr int dxs[4] = {1, -1, 0, 0};
+        constexpr int dys[4] = {0, 0, 1, -1};
+        for (int k = 0; k < 4; k++)
+        {
+            int nx = x + dxs[k];
+            int ny = y + dys[k];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                continue;
+            if (grid[ny][nx] == '~')
+                return true;
+        }
+        return false;
+    }
+
+    void updateTrees()
+    {
+        for (Tree &tree : trees)
+            tree.grow(isNearWater(tree.x, tree.y));
+    }
 };
 
 // =====================================================
 // MAP HELPERS
 // =====================================================
-
-static vector<Position> ironMines;
 
 const Tree *bestEnemyTree(
     const vector<Troll> &trolls,
@@ -714,6 +1282,40 @@ void playTrolls(
 }
 
 // =====================================================
+// ENGINE
+// =====================================================
+
+// =====================================================
+// MCTS
+// =====================================================
+
+constexpr int MAX_NODES = 100000;
+
+struct Node
+{
+    State state;
+    vector<Action> actions;
+    vector<Node *> children;
+    float score = 0.0f;
+    int visits = 0;
+};
+
+Node nodePool[MAX_NODES];
+int nodeCount = 0;
+
+Node *allocNode()
+{
+    Node *n = &nodePool[nodeCount++];
+    n->score = 0.0f;
+    n->visits = 0;
+    n->actions.clear();
+    n->children.clear();
+    return n;
+}
+
+void resetNodePool() { nodeCount = 0; }
+
+// =====================================================
 // PARSING
 // =====================================================
 
@@ -868,6 +1470,8 @@ int main()
     cin.ignore();
 
     State state;
+    state.w = w;
+    state.h = h;
     state.myShack.x = -1;
     state.enemyShack.x = -1;
 
