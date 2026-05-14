@@ -97,6 +97,9 @@ public:
 // ACTION
 // =====================================================
 
+class State;
+class Troll;
+
 class Action
 {
 public:
@@ -155,30 +158,10 @@ public:
     static Action moveAndDrop(int trollid, int playerid, int x, int y) { return Action(MACRO, MOVE_AND_DROP, trollid, playerid, x, y); }
     static Action moveAndMine(int trollid, int playerid, int x, int y) { return Action(MACRO, MOVE_AND_MINE_ONCE, trollid, playerid, x, y); }
 
-    // For MACRO actions: derive the next primitive Action to apply this turn, and
-    // flip macroTaskFinished on the final step. (WIP: collapses to the final
-    // primitive immediately — replace once intermediate progress is modeled.)
-    Action findNextPrimitiveAction(const State &s)
-    {
-        macroTaskFinished = true;
-        switch (type)
-        {
-        case MOVE_AND_HARVEST_ONCE:
-            return Action::harvest(trollid, playerid);
-        case MOVE_AND_PLANT:
-            return Action::plant(trollid, playerid, resource);
-        case MOVE_AND_CHOP:
-            return Action::chop(trollid, playerid);
-        case MOVE_AND_PICK:
-            return Action::pick(trollid, playerid, resource);
-        case MOVE_AND_DROP:
-            return Action::drop(trollid, playerid);
-        case MOVE_AND_MINE_ONCE:
-            return Action::mine(trollid, playerid);
-        default:
-            return Action::train(playerid, moveSpeed, carryCapacity, harvestPower, chopPower);
-        }
-    }
+    // Defined out-of-line after State is complete.
+    // Primitives: set macroTaskFinished and return *this.
+    // Macros: move toward (x,y); execute terminal primitive when arrived.
+    Action findNextPrimitiveAction(const State &s);
 
     string toString() const
     {
@@ -208,6 +191,10 @@ public:
 private:
     Action(Category cat, Type t, int trollid = 0, int playerid = 0, int x = 0, int y = 0, string res = "", int ms = 0, int cc = 0, int hp = 0, int cp = 0)
         : category(cat), type(t), trollid(trollid), playerid(playerid), x(x), y(y), resource(res), moveSpeed(ms), carryCapacity(cc), harvestPower(hp), chopPower(cp) {}
+
+    // Out-of-line (need complete State/Troll)
+    const Troll *findTrollInState(const State &s) const;
+    Action moveToward(const State &s, const Troll &t, int targetX, int targetY) const;
 };
 
 class ActionSet
@@ -714,22 +701,49 @@ private:
             }
         }
 
-        // MOVE_AND_PICK: troll has empty inventory and shack has fruit
-        if (!t.isCarrying())
+        // MOVE_AND_PICK / MOVE_AND_DROP: target is the closest walkable cell adjacent
+        // to the shack (shack cell itself is not walkable).
+        bool canPick = !t.isCarrying() && (shack.plum > 0 || shack.lemon > 0 || shack.apple > 0 || shack.banana > 0);
+        bool canDrop = t.isCarrying();
+        if (canPick || canDrop)
         {
-            if (shack.plum > 0)
-                actions.push_back(Action::moveAndPick(t.id, t.player, shack.x, shack.y, "PLUM"));
-            if (shack.lemon > 0)
-                actions.push_back(Action::moveAndPick(t.id, t.player, shack.x, shack.y, "LEMON"));
-            if (shack.apple > 0)
-                actions.push_back(Action::moveAndPick(t.id, t.player, shack.x, shack.y, "APPLE"));
-            if (shack.banana > 0)
-                actions.push_back(Action::moveAndPick(t.id, t.player, shack.x, shack.y, "BANANA"));
-        }
+            constexpr int dxs[4] = {1, -1, 0, 0};
+            constexpr int dys[4] = {0, 0, 1, -1};
+            int shackAdjX = -1, shackAdjY = -1, shackAdjDist = -1;
+            for (int k = 0; k < 4; k++)
+            {
+                int nx = shack.x + dxs[k], ny = shack.y + dys[k];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                    continue;
+                if (!isCellWalkable(grid[ny][nx]))
+                    continue;
+                int d = bfs_dist_lookup[t.y][t.x][ny][nx];
+                if (d >= 0 && (shackAdjDist < 0 || d < shackAdjDist))
+                {
+                    shackAdjDist = d;
+                    shackAdjX = nx;
+                    shackAdjY = ny;
+                }
+            }
 
-        // MOVE_AND_DROP: troll is carrying something
-        if (t.isCarrying())
-            actions.push_back(Action::moveAndDrop(t.id, t.player, shack.x, shack.y));
+            if (shackAdjX >= 0)
+            {
+                if (canPick)
+                {
+                    if (shack.plum > 0)
+                        actions.push_back(Action::moveAndPick(t.id, t.player, shackAdjX, shackAdjY, "PLUM"));
+                    if (shack.lemon > 0)
+                        actions.push_back(Action::moveAndPick(t.id, t.player, shackAdjX, shackAdjY, "LEMON"));
+                    if (shack.apple > 0)
+                        actions.push_back(Action::moveAndPick(t.id, t.player, shackAdjX, shackAdjY, "APPLE"));
+                    if (shack.banana > 0)
+                        actions.push_back(Action::moveAndPick(t.id, t.player, shackAdjX, shackAdjY, "BANANA"));
+                }
+
+                if (canDrop)
+                    actions.push_back(Action::moveAndDrop(t.id, t.player, shackAdjX, shackAdjY));
+            }
+        }
 
         // MOVE_AND_MINE_ONCE: closest reachable walkable cell adjacent to closest mine
         if (t.chopPower > 0 && t.canCarry())
@@ -884,17 +898,9 @@ public:
 
             for (Action &a : set.actions)
             {
-                if (a.category == Action::PRIMITIVE)
-                {
-                    primitiveActions.push_back(a);
-                    a.macroTaskFinished = true;
-                }
-                else
-                {
-                    primitiveActions.push_back(a.findNextPrimitiveAction(*this));
-                    if (a.macroTaskFinished)
-                        anyFinished = true;
-                }
+                primitiveActions.push_back(a.findNextPrimitiveAction(*this));
+                if (a.macroTaskFinished)
+                    anyFinished = true;
             }
 
             applyActions(primitiveActions);
@@ -1266,6 +1272,79 @@ private:
             tree.grow(isNearWater(tree.x, tree.y));
     }
 };
+
+// =====================================================
+// ACTION — out-of-line methods (need complete State/Troll)
+// =====================================================
+
+const Troll *Action::findTrollInState(const State &s) const
+{
+    for (const Troll &t : s.trolls)
+        if (t.id == trollid)
+            return &t;
+    return nullptr;
+}
+
+// Returns Action::move toward (targetX, targetY) picking the reachable cell
+// within t.movementSpeed that minimises remaining BFS distance to the target.
+Action Action::moveToward(const State &s, const Troll &t, int targetX, int targetY) const
+{
+    int bestX = t.x, bestY = t.y;
+    int bestDist = bfs_dist_lookup[t.y][t.x][targetY][targetX];
+
+    for (int cy = 0; cy < s.h; cy++)
+        for (int cx = 0; cx < s.w; cx++)
+        {
+            int stepDist = bfs_dist_lookup[t.y][t.x][cy][cx];
+            if (stepDist < 1 || stepDist > t.movementSpeed)
+                continue;
+            int remDist = bfs_dist_lookup[cy][cx][targetY][targetX];
+            if (remDist < 0)
+                continue;
+            if (bestDist < 0 || remDist < bestDist)
+            {
+                bestDist = remDist;
+                bestX = cx;
+                bestY = cy;
+            }
+        }
+    return Action::move(trollid, playerid, bestX, bestY);
+}
+
+Action Action::findNextPrimitiveAction(const State &s)
+{
+    if (category == PRIMITIVE)
+    {
+        macroTaskFinished = true;
+        return *this;
+    }
+
+    // Move toward destination
+    const Troll *t = findTrollInState(s);
+    if (t && !(t->x == x && t->y == y))
+        return moveToward(s, *t, x, y);
+
+    // Execute terminal primitive only once arrived.
+    macroTaskFinished = true;
+
+    switch (type)
+    {
+    case MOVE_AND_HARVEST_ONCE:
+        return Action::harvest(trollid, playerid);
+    case MOVE_AND_PLANT:
+        return Action::plant(trollid, playerid, resource);
+    case MOVE_AND_CHOP:
+        return Action::chop(trollid, playerid);
+    case MOVE_AND_PICK:
+        return Action::pick(trollid, playerid, resource);
+    case MOVE_AND_DROP:
+        return Action::drop(trollid, playerid);
+    case MOVE_AND_MINE_ONCE:
+        return Action::mine(trollid, playerid);
+    }
+
+    return *this;
+}
 
 // =====================================================
 // MCTS
