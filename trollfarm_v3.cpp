@@ -45,6 +45,13 @@
 
         - Tester un HMCTS-OP avec le graph MAXQ suivant :
 
+    Engine :
+        C'est pas grave que l'engine ne simule pas exactement le comportement du jeu.
+        Certains comportements de l'adversaire sont trop aléatoires pour que simuler le jeu précisément par rapport à ses actions n'apporte pas grand chose,
+            mis à part de la complexité et du temps perdu.
+        Exemple : Pas besoin d'ancitiper que planter 2 arbre différents en même temps sur la même case ne résulte en rien.
+        Par contre : Simuler que 2 trolls coupent le même arbre en même temps et la répartition du bois est important
+
 */
 
 using namespace std;
@@ -80,47 +87,59 @@ public:
     };
 
     Type type;
-    int id = 0;
+    int trollid = 0;
+    int playerid = 0;
     int x = 0, y = 0;
     string resource;
     int moveSpeed = 0, carryCapacity = 0, harvestPower = 0, chopPower = 0;
 
-    static Action move(int id, int x, int y) { return Action(MOVE, id, x, y); }
-    static Action harvest(int id) { return Action(HARVEST, id); }
-    static Action plant(int id, const string &res) { return Action(PLANT, id, 0, 0, res); }
-    static Action chop(int id) { return Action(CHOP, id); }
-    static Action pick(int id, const string &res) { return Action(PICK, id, 0, 0, res); }
-    static Action drop(int id) { return Action(DROP, id); }
-    static Action train(int player, int ms, int cc, int hp, int cp) { return Action(TRAIN, player, 0, 0, "", ms, cc, hp, cp); }
-    static Action mine(int id) { return Action(MINE, id); }
+    static Action move(int trollid, int playerid, int x, int y) { return Action(MOVE, trollid, playerid, x, y); }
+    static Action harvest(int trollid, int playerid) { return Action(HARVEST, trollid, playerid); }
+    static Action plant(int trollid, int playerid, const string &res) { return Action(PLANT, trollid, playerid, 0, 0, res); }
+    static Action chop(int trollid, int playerid) { return Action(CHOP, trollid, playerid); }
+    static Action pick(int trollid, int playerid, const string &res) { return Action(PICK, trollid, playerid, 0, 0, res); }
+    static Action drop(int trollid, int playerid) { return Action(DROP, trollid, playerid); }
+    static Action train(int playerid, int ms, int cc, int hp, int cp) { return Action(TRAIN, 0, playerid, 0, 0, "", ms, cc, hp, cp); }
+    static Action mine(int trollid, int playerid) { return Action(MINE, trollid, playerid); }
 
     string toString() const
     {
         switch (type)
         {
         case MOVE:
-            return "MOVE " + to_string(id) + " " + to_string(x) + " " + to_string(y);
+            return "MOVE " + to_string(trollid) + " " + to_string(x) + " " + to_string(y);
         case HARVEST:
-            return "HARVEST " + to_string(id);
+            return "HARVEST " + to_string(trollid);
         case PLANT:
-            return "PLANT " + to_string(id) + " " + resource;
+            return "PLANT " + to_string(trollid) + " " + resource;
         case CHOP:
-            return "CHOP " + to_string(id);
+            return "CHOP " + to_string(trollid);
         case PICK:
-            return "PICK " + to_string(id) + " " + resource;
+            return "PICK " + to_string(trollid) + " " + resource;
         case DROP:
-            return "DROP " + to_string(id);
+            return "DROP " + to_string(trollid);
         case TRAIN:
             return "TRAIN " + to_string(moveSpeed) + " " + to_string(carryCapacity) + " " + to_string(harvestPower) + " " + to_string(chopPower);
         case MINE:
-            return "MINE " + to_string(id);
+            return "MINE " + to_string(trollid);
         }
         return "";
     }
 
 private:
-    Action(Type t, int id = 0, int x = 0, int y = 0, string res = "", int ms = 0, int cc = 0, int hp = 0, int cp = 0)
-        : type(t), id(id), x(x), y(y), resource(res), moveSpeed(ms), carryCapacity(cc), harvestPower(hp), chopPower(cp) {}
+    Action(Type t, int trollid = 0, int playerid = 0, int x = 0, int y = 0, string res = "", int ms = 0, int cc = 0, int hp = 0, int cp = 0)
+        : type(t), trollid(trollid), playerid(playerid), x(x), y(y), resource(res), moveSpeed(ms), carryCapacity(cc), harvestPower(hp), chopPower(cp) {}
+};
+
+// =====================================================
+// ACTION SET
+// =====================================================
+
+class ActionSet
+{
+public:
+    int playerid = 0;
+    vector<Action> actions;
 };
 
 // =====================================================
@@ -398,9 +417,9 @@ public:
                       vector<Action> &actions) const
     {
         if (manhattan(x, y, shack.x, shack.y) <= 1)
-            emitAction(actions, Action::drop(id));
+            emitAction(actions, Action::drop(id, player));
         else
-            emitAction(actions, Action::move(id, shack.x, shack.y));
+            emitAction(actions, Action::move(id, player, shack.x, shack.y));
     }
 };
 
@@ -420,6 +439,40 @@ public:
     vector<Troll> enemyTrolls;
 
 private:
+    // actions[i] corresponds to playerTrolls[i] (TRAIN not included here)
+    bool isValidActionSet(const ActionSet &as, const vector<Troll> &playerTrolls) const
+    {
+        int n = (int)as.actions.size();
+
+        // Collect MOVE destinations; reject duplicate destinations (rule 1)
+        set<pair<int, int>> moveDests;
+        for (int i = 0; i < n; i++)
+        {
+            const Action &a = as.actions[i];
+            if (a.type != Action::MOVE)
+                continue;
+            if (!moveDests.insert({a.x, a.y}).second)
+                return false;
+        }
+
+        // Reject MOVE into a cell occupied by a non-moving ally (rule 2)
+        for (int i = 0; i < n; i++)
+        {
+            const Action &a = as.actions[i];
+            if (a.type != Action::MOVE)
+                continue;
+            for (int j = 0; j < n; j++)
+            {
+                if (j == i || as.actions[j].type == Action::MOVE)
+                    continue;
+                if (playerTrolls[j].x == a.x && playerTrolls[j].y == a.y)
+                    return false;
+            }
+        }
+
+        return true;
+    }
+
     void generateMoveActions(const Troll &t, const vector<Troll> &allies, vector<Action> &actions) const
     {
         for (int y = 0; y < h; y++)
@@ -440,7 +493,7 @@ private:
                     }
                 }
                 if (!occupied)
-                    actions.push_back(Action::move(t.id, x, y));
+                    actions.push_back(Action::move(t.id, t.player, x, y));
             }
         }
     }
@@ -456,7 +509,7 @@ private:
             if (mine.x == t.x && mine.y == t.y)
             {
                 if (t.chopPower > 0)
-                    actions.push_back(Action::mine(t.id));
+                    actions.push_back(Action::mine(t.id, t.player));
                 break;
             }
         }
@@ -471,7 +524,7 @@ private:
 
                 // No need for carrying capacity left: We could want to chop tree to deny it
                 if (t.chopPower > 0)
-                    actions.push_back(Action::chop(t.id));
+                    actions.push_back(Action::chop(t.id, t.player));
 
                 break;
             }
@@ -481,19 +534,19 @@ private:
         {
             // HARVEST: on tree with fruits and carry capacity available
             if (t.harvestPower > 0 && onTree->fruits > 0)
-                actions.push_back(Action::harvest(t.id));
+                actions.push_back(Action::harvest(t.id, t.player));
         }
         else
         {
             // PLANT: on grass with no tree under, for any fruit type carried
             if (t.carryPlum > 0)
-                actions.push_back(Action::plant(t.id, "PLUM"));
+                actions.push_back(Action::plant(t.id, t.player, "PLUM"));
             if (t.carryLemon > 0)
-                actions.push_back(Action::plant(t.id, "LEMON"));
+                actions.push_back(Action::plant(t.id, t.player, "LEMON"));
             if (t.carryApple > 0)
-                actions.push_back(Action::plant(t.id, "APPLE"));
+                actions.push_back(Action::plant(t.id, t.player, "APPLE"));
             if (t.carryBanana > 0)
-                actions.push_back(Action::plant(t.id, "BANANA"));
+                actions.push_back(Action::plant(t.id, t.player, "BANANA"));
         }
 
         if (manhattan(t.x, t.y, shack.x, shack.y) <= 1)
@@ -502,22 +555,79 @@ private:
             {
                 // PICK: when adjacent to own shack, carry capacity available and fruit is available in shack
                 if (shack.plum > 0)
-                    actions.push_back(Action::pick(t.id, "PLUM"));
+                    actions.push_back(Action::pick(t.id, t.player, "PLUM"));
                 if (shack.lemon > 0)
-                    actions.push_back(Action::pick(t.id, "LEMON"));
+                    actions.push_back(Action::pick(t.id, t.player, "LEMON"));
                 if (shack.apple > 0)
-                    actions.push_back(Action::pick(t.id, "APPLE"));
+                    actions.push_back(Action::pick(t.id, t.player, "APPLE"));
                 if (shack.banana > 0)
-                    actions.push_back(Action::pick(t.id, "BANANA"));
+                    actions.push_back(Action::pick(t.id, t.player, "BANANA"));
             }
 
             // DROP: adjacent to own shack, with something to drop
             if (t.isCarrying())
-                actions.push_back(Action::drop(t.id));
+                actions.push_back(Action::drop(t.id, t.player));
         }
     }
 
 public:
+    vector<ActionSet> generatePlayerActionSets(int player) const
+    {
+        const vector<Troll> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
+        const Shack &shack = (player == 0) ? myShack : enemyShack;
+
+        // Collect per-troll action lists
+        vector<vector<Action>> perTroll;
+        for (const Troll &t : playerTrolls)
+        {
+            vector<Action> trollActions;
+            generateTrollActions(t, shack, playerTrolls, trollActions);
+            perTroll.push_back(move(trollActions));
+        }
+
+        // Cartesian product across trolls
+        vector<ActionSet> result;
+        result.push_back(ActionSet{player, {}});
+        for (const auto &trollActions : perTroll)
+        {
+            vector<ActionSet> next;
+            next.reserve(result.size() * trollActions.size());
+            for (const ActionSet &existing : result)
+                for (const Action &a : trollActions)
+                {
+                    ActionSet ns = existing;
+                    ns.actions.push_back(a);
+                    next.push_back(move(ns));
+                }
+            result = move(next);
+        }
+
+        // Filter impossible combinations
+        result.erase(
+            remove_if(result.begin(), result.end(),
+                [&](const ActionSet &as) { return !isValidActionSet(as, playerTrolls); }),
+            result.end());
+
+        // If TRAIN is possible, duplicate each ActionSet with TRAIN appended
+        int n = (int)playerTrolls.size();
+        if (shack.plum >= n + 4 &&
+            shack.lemon >= n + 4 &&
+            shack.apple >= n + 4 &&
+            shack.iron >= n + 4)
+        {
+            Action trainAction = Action::train(player, 2, 2, 2, 2);
+            int sz = (int)result.size();
+            for (int i = 0; i < sz; i++)
+            {
+                ActionSet withTrain = result[i];
+                withTrain.actions.push_back(trainAction);
+                result.push_back(move(withTrain));
+            }
+        }
+
+        return result;
+    }
+
     vector<Action> generatePossibleActions(int player) const
     {
         const vector<Troll> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
@@ -602,7 +712,7 @@ private:
 
     void applyMove(const Action &a)
     {
-        Troll *t = findTrollById(a.id);
+        Troll *t = findTrollById(a.trollid);
         if (!t)
             return;
 
@@ -617,7 +727,7 @@ private:
 
     void applyPlant(const Action &a)
     {
-        Troll *t = findTrollById(a.id);
+        Troll *t = findTrollById(a.trollid);
         if (!t)
             return;
         int *fruit = t->fruitField(a.resource);
@@ -639,7 +749,7 @@ private:
 
     void applyPick(const Action &a)
     {
-        Troll *t = findTrollById(a.id);
+        Troll *t = findTrollById(a.trollid);
         if (!t || !t->canCarry())
             return;
         Shack &shack = (t->player == 0) ? myShack : enemyShack;
@@ -653,7 +763,7 @@ private:
 
     void applyDrop(const Action &a)
     {
-        Troll *t = findTrollById(a.id);
+        Troll *t = findTrollById(a.trollid);
         if (!t)
             return;
         Shack &shack = (t->player == 0) ? myShack : enemyShack;
@@ -673,7 +783,7 @@ private:
 
     void applyMine(const Action &a)
     {
-        Troll *t = findTrollById(a.id);
+        Troll *t = findTrollById(a.trollid);
         if (!t)
             return;
         int amount = min(t->chopPower, t->remainingCarry());
@@ -684,7 +794,7 @@ private:
     void applyTrain(const Action &a)
     {
         // Should check if shack has enough resources because a troll can PICK items from the shack in the same turn
-        int player = a.id;
+        int player = a.playerid;
         vector<Troll> &teamTrolls = (player == 0) ? trolls : enemyTrolls;
         Shack &shack = (player == 0) ? myShack : enemyShack;
 
@@ -732,7 +842,7 @@ private:
         {
             if (a.type != Action::HARVEST)
                 continue;
-            Troll *t = findTrollById(a.id);
+            Troll *t = findTrollById(a.trollid);
             if (!t)
                 continue;
             int idx = findTreeIndex(t->x, t->y);
@@ -804,7 +914,7 @@ private:
         {
             if (a.type != Action::CHOP)
                 continue;
-            Troll *t = findTrollById(a.id);
+            Troll *t = findTrollById(a.trollid);
             if (!t)
                 continue;
             int idx = findTreeIndex(t->x, t->y);
@@ -916,7 +1026,7 @@ constexpr int MAX_NODES = 100000;
 struct Node
 {
     State state;
-    vector<Action> actions;
+    vector<ActionSet> actionSets;
     vector<Node *> children;
     int remainingUnexpandedChildren = 0;
     int visits = 0;
@@ -930,7 +1040,7 @@ Node *allocNode()
 {
     Node *n = &nodePool[nodeCount++];
 
-    n->actions.clear();
+    n->actionSets.clear();
     n->children.clear();
     n->remainingUnexpandedChildren = 0;
     n->visits = 0;
@@ -1002,7 +1112,7 @@ Node *expand(Node *node, int idx)
     Node *child = allocNode();
 
     child->state = node->state;
-    child->state.applyActions({node->actions[idx]});
+    child->state.applyActions(node->actionSets[idx].actions);
 
     node->children[idx] = child;
     node->remainingUnexpandedChildren--;
@@ -1012,17 +1122,17 @@ Node *expand(Node *node, int idx)
 
 void finalizeExpansionOnFirstVisit(Node *node)
 {
-    // Generate actions and fulfill children vector with NULLs to mark them as unexpanded.
-    node->actions = node->state.generatePossibleActions(0);
-    node->children.assign(node->actions.size(), nullptr);
-    node->remainingUnexpandedChildren = (int)node->actions.size();
+    // Generate action sets and fulfill children vector with NULLs to mark them as unexpanded.
+    node->actionSets = node->state.generatePlayerActionSets(0);
+    node->children.assign(node->actionSets.size(), nullptr);
+    node->remainingUnexpandedChildren = (int)node->actionSets.size();
 }
 
 float mcts(Node *node)
 {
     // Leaf (visited once, no actions yet) -> generate actions and
     // fill children with NULLs so we can track which slots remain.
-    if (node->actions.empty())
+    if (node->actionSets.empty())
         finalizeExpansionOnFirstVisit(node);
 
     int childId;
@@ -1047,7 +1157,7 @@ float mcts(Node *node)
     return childValue;
 }
 
-Action runMCTS(const State &rootState)
+ActionSet runMCTS(const State &rootState)
 {
     resetNodePool();
     Node *root = allocNode();
@@ -1083,10 +1193,10 @@ Action runMCTS(const State &rootState)
         }
     }
 
-    if (bestIdx < 0 || root->actions.empty())
-        return Action::move(0, 0, 0);
+    if (bestIdx < 0 || root->actionSets.empty())
+        return ActionSet{};
 
-    return root->actions[bestIdx];
+    return root->actionSets[bestIdx];
 }
 
 // =====================================================
@@ -1217,8 +1327,8 @@ int main()
         parseTrees(state);
         parseTrolls(state);
 
-        vector<Action> actions;
+        ActionSet actionSet = runMCTS(state);
 
-        displayActions(actions);
+        displayActions(actionSet.actions);
     }
 }
