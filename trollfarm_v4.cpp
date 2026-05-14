@@ -214,9 +214,9 @@ public:
 
     static MacroAction moveAndChop(int trollid, int playerid, int x, int y) { return MacroAction(MOVE_AND_CHOP, trollid, playerid, x, y); }
     static MacroAction moveAndHarvest(int trollid, int playerid, int x, int y) { return MacroAction(MOVE_AND_HARVEST_ONCE, trollid, playerid, x, y); }
-    static MacroAction moveAndPlant(int trollid, int playerid, int x, int y) { return MacroAction(MOVE_AND_PLANT, trollid, playerid, x, y); }
+    static MacroAction moveAndPlant(int trollid, int playerid, int x, int y, const string &res) { return MacroAction(MOVE_AND_PLANT, trollid, playerid, x, y, res); }
     static MacroAction moveAndMine(int trollid, int playerid, int x, int y) { return MacroAction(MOVE_AND_MINE_ONCE, trollid, playerid, x, y); }
-    static MacroAction moveAndPick(int trollid, int playerid, int x, int y) { return MacroAction(MOVE_AND_PICK, trollid, playerid, x, y); }
+    static MacroAction moveAndPick(int trollid, int playerid, int x, int y, const string &res) { return MacroAction(MOVE_AND_PICK, trollid, playerid, x, y, res); }
     static MacroAction moveAndDrop(int trollid, int playerid, int x, int y) { return MacroAction(MOVE_AND_DROP, trollid, playerid, x, y); }
     static MacroAction train(int playerid, int ms, int cc, int hp, int cp) { return MacroAction(TRAIN, 0, playerid, 0, 0, "", ms, cc, hp, cp); }
 };
@@ -645,7 +645,154 @@ private:
 
     vector<MacroAction> generateTrollActions(const Troll &t, const Shack &shack, const vector<Troll> &allies) const
     {
+        vector<MacroAction> actions;
 
+        if (t.harvestPower > 0 && t.canCarry())
+        {
+            // Detect tree under troll
+            const Tree *onTree = nullptr;
+            for (const auto &tr : trees)
+            {
+                if (tr.x == t.x && tr.y == t.y)
+                {
+                    onTree = &tr;
+                    break;
+                }
+            }
+
+            // HARVEST: troll is on a tree with fruits
+            if (onTree && onTree->fruits > 0)
+                actions.push_back(MacroAction(MacroAction::HARVEST, t.id, t.player, t.x, t.y));
+
+            // MOVE_AND_HARVEST_ONCE: closest tree of each fruit type that has fruits
+            const string fruitTypes[4] = {"PLUM", "LEMON", "APPLE", "BANANA"};
+            for (const string &ft : fruitTypes)
+            {
+                int bestDist = -1;
+                const Tree *best = nullptr;
+                for (const auto &tr : trees)
+                {
+                    if (tr.type != ft || tr.fruits <= 0)
+                        continue;
+                    int d = bfs_dist_lookup[t.y][t.x][tr.y][tr.x];
+                    if (d < 0)
+                        continue;
+                    if (bestDist == -1 || d < bestDist)
+                    {
+                        bestDist = d;
+                        best = &tr;
+                    }
+                }
+                if (best)
+                    actions.push_back(MacroAction::moveAndHarvest(t.id, t.player, best->x, best->y));
+            }
+        }
+
+        // MOVE_AND_CHOP: every reachable tree
+        if (t.chopPower > 0)
+        {
+            for (const auto &tr : trees)
+            {
+                int d = bfs_dist_lookup[t.y][t.x][tr.y][tr.x];
+                if (d < 0)
+                    continue;
+                actions.push_back(MacroAction::moveAndChop(t.id, t.player, tr.x, tr.y));
+            }
+        }
+
+        // MOVE_AND_PLANT: walkable, tree-free cells at d<=2 from ally shack, for each fruit carried
+        if (t.carryPlum > 0 || t.carryLemon > 0 || t.carryApple > 0 || t.carryBanana > 0)
+        {
+            // Can be precomputed
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    if (!isCellWalkable(grid[y][x]))
+                        continue;
+                    int dShack = bfs_dist_lookup[shack.y][shack.x][y][x];
+                    if (dShack < 0 || dShack > 2)
+                        continue;
+
+                    if (findTreeIndex(x, y) >= 0)
+                        continue;
+
+                    if (t.carryPlum > 0)
+                        actions.push_back(MacroAction::moveAndPlant(t.id, t.player, x, y, "PLUM"));
+                    if (t.carryLemon > 0)
+                        actions.push_back(MacroAction::moveAndPlant(t.id, t.player, x, y, "LEMON"));
+                    if (t.carryApple > 0)
+                        actions.push_back(MacroAction::moveAndPlant(t.id, t.player, x, y, "APPLE"));
+                    if (t.carryBanana > 0)
+                        actions.push_back(MacroAction::moveAndPlant(t.id, t.player, x, y, "BANANA"));
+                }
+            }
+        }
+
+        // MOVE_AND_PICK: troll has empty inventory and shack has fruit
+        if (!t.isCarrying())
+        {
+            if (shack.plum > 0)
+                actions.push_back(MacroAction::moveAndPick(t.id, t.player, shack.x, shack.y, "PLUM"));
+            if (shack.lemon > 0)
+                actions.push_back(MacroAction::moveAndPick(t.id, t.player, shack.x, shack.y, "LEMON"));
+            if (shack.apple > 0)
+                actions.push_back(MacroAction::moveAndPick(t.id, t.player, shack.x, shack.y, "APPLE"));
+            if (shack.banana > 0)
+                actions.push_back(MacroAction::moveAndPick(t.id, t.player, shack.x, shack.y, "BANANA"));
+        }
+
+        // MOVE_AND_DROP: troll is carrying something
+        if (t.isCarrying())
+            actions.push_back(MacroAction::moveAndDrop(t.id, t.player, shack.x, shack.y));
+
+        // MOVE_AND_MINE_ONCE: closest reachable walkable cell adjacent to closest mine
+        if (t.chopPower > 0 && t.canCarry())
+        {
+            // Can be precomputed
+            constexpr int dxs[4] = {1, -1, 0, 0};
+            constexpr int dys[4] = {0, 0, 1, -1};
+            int bestDist = -1;
+            int bestX = -1, bestY = -1;
+            for (const auto &mine : ironMines)
+            {
+                for (int k = 0; k < 4; k++)
+                {
+                    int nx = mine.x + dxs[k];
+                    int ny = mine.y + dys[k];
+                    if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                        continue;
+                    if (!isCellWalkable(grid[ny][nx]))
+                        continue;
+                    int d = bfs_dist_lookup[t.y][t.x][ny][nx];
+                    if (d < 0)
+                        continue;
+                    if (bestDist == -1 || d < bestDist)
+                    {
+                        bestDist = d;
+                        bestX = nx;
+                        bestY = ny;
+                    }
+                }
+            }
+            if (bestX != -1)
+                actions.push_back(MacroAction::moveAndMine(t.id, t.player, bestX, bestY));
+        }
+
+        // MINE: troll is adjacent to an iron mine
+        if (t.chopPower > 0 && t.canCarry())
+        {
+            for (const auto &mine : ironMines)
+            {
+                if (manhattan(t.x, t.y, mine.x, mine.y) == 1)
+                {
+                    actions.push_back(MacroAction(MacroAction::MINE, t.id, t.player, mine.x, mine.y));
+                    break;
+                }
+            }
+        }
+
+        return actions;
     }
 
 public:
@@ -655,7 +802,52 @@ public:
 
     vector<AnyActionSet> generatePlayerActionSets(int player) const
     {
+        const vector<Troll> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
+        const Shack &shack = (player == 0) ? myShack : enemyShack;
 
+        // Collect per-troll macro action lists
+        vector<vector<MacroAction>> perTroll;
+        for (const Troll &t : playerTrolls)
+            perTroll.push_back(generateTrollActions(t, shack, playerTrolls));
+
+        // Cartesian product across trolls
+        vector<vector<MacroAction>> combos;
+        combos.push_back({});
+        for (const auto &trollActions : perTroll)
+        {
+            vector<vector<MacroAction>> next;
+            next.reserve(combos.size() * trollActions.size());
+            for (const vector<MacroAction> &existing : combos)
+                for (const MacroAction &a : trollActions)
+                {
+                    vector<MacroAction> actions = existing;
+                    actions.push_back(a);
+                    next.push_back(move(actions));
+                }
+            combos = move(next);
+        }
+
+        // If TRAIN is possible, append it to every combo
+        int n = (int)playerTrolls.size();
+        bool canTrain = shack.plum >= n + 4 &&
+                        shack.lemon >= n + 4 &&
+                        shack.apple >= n + 4 &&
+                        shack.iron >= n + 4;
+
+        // Pack each macro action set in an instance of AnyActionSet.macroActionsSet
+        vector<AnyActionSet> result;
+        result.reserve(combos.size());
+        for (vector<MacroAction> &actions : combos)
+        {
+            if (canTrain)
+                actions.push_back(MacroAction::train(player, 2, 2, 2, 2));
+
+            AnyActionSet any;
+            any.macroActionsSet = move(actions);
+            result.push_back(move(any));
+        }
+
+        return result;
     }
 
     // This method is only use for the first depth of MCTS.
