@@ -4,7 +4,13 @@ Spring Challenge 2026
 
 # Versions
 
-## v3 - Chop warrior & Chop scaler with real pathfinding
+## v3 - Basic naive MCTS
+
+League: Bronze (max)
+<!-- Last moment in arena: 100/477 -->
+First moment in arena: 40/700
+
+## v2.1 - Chop warrior & Chop scaler with real pathfinding
 
 League: Bronze (max)
 <!-- Last moment in arena: 100/477 -->

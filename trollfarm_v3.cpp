@@ -6,6 +6,7 @@
 #include <set>
 #include <queue>
 #include <cstdlib>
+#include <chrono>
 
 /*
     3
@@ -29,9 +30,19 @@
         - Do NOT plant trees if shacks distance is <= 5
 
 
-    Algorithm :
+    Algorithms :
         - Faire un MCTS classique avec une heuristic.
         - Faire un macro-MCTS en ajoutant des macro actions. Soit un séquence défini de k actions qui termine sur un état à t+k tours
+            Macro actions possibles (Sont suivis par une action primitive) :
+            - Troll X MOVE à un tree, pour ensuite CHOP tout l'arbre
+            - Troll X MOVE à un tree, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+            - Troll X MOVE à une mine, pour ensuite MINE jusqu'a ce qu'il soit plein
+            - Troll X MOVE au shack allié, pour ensuite PICK un fruit
+            - Troll X MOVE au shack allié, pour ensuite DROP ce qu'il carry
+            - Troll X MOVE à une cell particuliere, pour ensuite PLANT
+            Actions primitives restantes :
+            - Train un troll avec des stats données
+
         - Tester un HMCTS-OP avec le graph MAXQ suivant :
 
 */
@@ -243,14 +254,18 @@ public:
     static int healthFromSize(const string &type, int size)
     {
         // Indexed by size 1..4
-        static constexpr int PLUM_LEMON[5] = {0,  6,  8, 10, 12};
-        static constexpr int APPLE[5]      = {0, 11, 14, 17, 20};
-        static constexpr int BANANA[5]     = {0,  3,  4,  5,  6};
+        static constexpr int PLUM_LEMON[5] = {0, 6, 8, 10, 12};
+        static constexpr int APPLE[5] = {0, 11, 14, 17, 20};
+        static constexpr int BANANA[5] = {0, 3, 4, 5, 6};
 
-        if (size < 1 || size > 4) return 0;
-        if (type == "PLUM" || type == "LEMON") return PLUM_LEMON[size];
-        if (type == "APPLE")                   return APPLE[size];
-        if (type == "BANANA")                  return BANANA[size];
+        if (size < 1 || size > 4)
+            return 0;
+        if (type == "PLUM" || type == "LEMON")
+            return PLUM_LEMON[size];
+        if (type == "APPLE")
+            return APPLE[size];
+        if (type == "BANANA")
+            return BANANA[size];
         return 0;
     }
 
@@ -258,17 +273,25 @@ public:
     {
         if (nearWater)
         {
-            if (type == "PLUM")   return 3;
-            if (type == "LEMON")  return 3;
-            if (type == "APPLE")  return 2;
-            if (type == "BANANA") return 4;
+            if (type == "PLUM")
+                return 3;
+            if (type == "LEMON")
+                return 3;
+            if (type == "APPLE")
+                return 2;
+            if (type == "BANANA")
+                return 4;
         }
         else
         {
-            if (type == "PLUM")   return 8;
-            if (type == "LEMON")  return 8;
-            if (type == "APPLE")  return 9;
-            if (type == "BANANA") return 6;
+            if (type == "PLUM")
+                return 8;
+            if (type == "LEMON")
+                return 8;
+            if (type == "APPLE")
+                return 9;
+            if (type == "BANANA")
+                return 6;
         }
         return 0;
     }
@@ -287,10 +310,14 @@ public:
 
     int *fruitField(const string &type)
     {
-        if (type == "PLUM")   return &plum;
-        if (type == "LEMON")  return &lemon;
-        if (type == "APPLE")  return &apple;
-        if (type == "BANANA") return &banana;
+        if (type == "PLUM")
+            return &plum;
+        if (type == "LEMON")
+            return &lemon;
+        if (type == "APPLE")
+            return &apple;
+        if (type == "BANANA")
+            return &banana;
         return nullptr;
     }
 };
@@ -350,10 +377,14 @@ public:
 
     int *fruitField(const string &type)
     {
-        if (type == "PLUM")   return &carryPlum;
-        if (type == "LEMON")  return &carryLemon;
-        if (type == "APPLE")  return &carryApple;
-        if (type == "BANANA") return &carryBanana;
+        if (type == "PLUM")
+            return &carryPlum;
+        if (type == "LEMON")
+            return &carryLemon;
+        if (type == "APPLE")
+            return &carryApple;
+        if (type == "BANANA")
+            return &carryBanana;
         return nullptr;
     }
 
@@ -787,12 +818,18 @@ private:
         if (!t)
             return;
         Shack &shack = (t->player == 0) ? myShack : enemyShack;
-        shack.plum   += t->carryPlum;   t->carryPlum = 0;
-        shack.lemon  += t->carryLemon;  t->carryLemon = 0;
-        shack.apple  += t->carryApple;  t->carryApple = 0;
-        shack.banana += t->carryBanana; t->carryBanana = 0;
-        shack.iron   += t->carryIron;   t->carryIron = 0;
-        shack.wood   += t->carryWood;   t->carryWood = 0;
+        shack.plum += t->carryPlum;
+        t->carryPlum = 0;
+        shack.lemon += t->carryLemon;
+        t->carryLemon = 0;
+        shack.apple += t->carryApple;
+        t->carryApple = 0;
+        shack.banana += t->carryBanana;
+        t->carryBanana = 0;
+        shack.iron += t->carryIron;
+        t->carryIron = 0;
+        shack.wood += t->carryWood;
+        t->carryWood = 0;
     }
 
     void applyMine(const Action &a)
@@ -813,23 +850,25 @@ private:
         Shack &shack = (player == 0) ? myShack : enemyShack;
 
         int n = (int)teamTrolls.size();
-        int costPlum  = n + a.moveSpeed * a.moveSpeed;
+        int costPlum = n + a.moveSpeed * a.moveSpeed;
         int costLemon = n + a.carryCapacity * a.carryCapacity;
         int costApple = n + a.harvestPower * a.harvestPower;
-        int costIron  = n + a.chopPower * a.chopPower;
+        int costIron = n + a.chopPower * a.chopPower;
 
         if (shack.plum < costPlum || shack.lemon < costLemon ||
             shack.apple < costApple || shack.iron < costIron)
             return;
 
-        shack.plum  -= costPlum;
+        shack.plum -= costPlum;
         shack.lemon -= costLemon;
         shack.apple -= costApple;
-        shack.iron  -= costIron;
+        shack.iron -= costIron;
 
         int nextId = 0;
-        for (const auto &t : trolls)      nextId = max(nextId, t.id);
-        for (const auto &t : enemyTrolls) nextId = max(nextId, t.id);
+        for (const auto &t : trolls)
+            nextId = max(nextId, t.id);
+        for (const auto &t : enemyTrolls)
+            nextId = max(nextId, t.id);
         nextId++;
 
         Troll nt;
@@ -839,8 +878,8 @@ private:
         nt.y = shack.y;
         nt.movementSpeed = a.moveSpeed;
         nt.carryCapacity = a.carryCapacity;
-        nt.harvestPower  = a.harvestPower;
-        nt.chopPower     = a.chopPower;
+        nt.harvestPower = a.harvestPower;
+        nt.chopPower = a.chopPower;
         nt.carryPlum = nt.carryLemon = nt.carryApple = 0;
         nt.carryBanana = nt.carryIron = nt.carryWood = 0;
         teamTrolls.push_back(nt);
@@ -895,7 +934,8 @@ private:
                     {
                         Troll *t = findTrollById(trollIds[i]);
                         int *f = t->fruitField(tree.type);
-                        if (f) (*f)++;
+                        if (f)
+                            (*f)++;
                         budgets[i]--;
                     }
                     tree.fruits = 0;
@@ -907,7 +947,8 @@ private:
                     {
                         Troll *t = findTrollById(trollIds[i]);
                         int *f = t->fruitField(tree.type);
-                        if (f) (*f)++;
+                        if (f)
+                            (*f)++;
                         budgets[i]--;
                     }
                     tree.fruits -= (int)active.size();
@@ -999,7 +1040,6 @@ private:
             if (killed[i])
                 trees.erase(trees.begin() + i);
     }
-
 
     bool isNearWater(int x, int y) const
     {
@@ -1296,8 +1336,9 @@ struct Node
     State state;
     vector<Action> actions;
     vector<Node *> children;
-    float score = 0.0f;
+    int remainingUnexpandedChildren = 0;
     int visits = 0;
+    float score = 0.0f;
 };
 
 Node nodePool[MAX_NODES];
@@ -1306,14 +1347,165 @@ int nodeCount = 0;
 Node *allocNode()
 {
     Node *n = &nodePool[nodeCount++];
-    n->score = 0.0f;
-    n->visits = 0;
+
     n->actions.clear();
     n->children.clear();
+    n->remainingUnexpandedChildren = 0;
+    n->visits = 0;
+    n->score = 0.0f;
+
     return n;
 }
 
 void resetNodePool() { nodeCount = 0; }
+
+// Placeholder heuristic: resource differential. Replace with a domain-specific
+// evaluation when ready (tree counts, troll positioning, carried fruit, etc.).
+float heuristic(const State &s)
+{
+    float myRes = s.myShack.plum + s.myShack.lemon + s.myShack.apple +
+                  s.myShack.banana + s.myShack.iron + s.myShack.wood;
+    float enRes = s.enemyShack.plum + s.enemyShack.lemon + s.enemyShack.apple +
+                  s.enemyShack.banana + s.enemyShack.iron + s.enemyShack.wood;
+    return myRes - enRes;
+}
+
+constexpr float UCT_C = 1.41421356f;
+
+int selectUnexpandedChild(Node *node)
+{
+    // Pick uniformly among the remaining NULL slots.
+    int pick = rand() % node->remainingUnexpandedChildren;
+
+    for (int i = 0; i < (int)node->children.size(); i++)
+    {
+        if (node->children[i] != nullptr)
+            continue;
+        if (pick == 0)
+            return i;
+        pick--;
+    }
+
+    return -1;
+}
+
+// Pick the next child index: a random unexpanded slot if the node isn't
+// fully expanded yet, otherwise the UCT-best child.
+int selectChild(Node *node)
+{
+    int bestIdx = 0;
+    float bestUct = -1e30f;
+    float logN = logf((float)node->visits);
+    for (int i = 0; i < (int)node->children.size(); i++)
+    {
+        Node *c = node->children[i];
+
+        float exploit = c->score / (float)c->visits;
+        float explore = UCT_C * sqrtf(logN / (float)c->visits);
+        float uct = exploit + explore;
+
+        if (uct > bestUct)
+        {
+            bestUct = uct;
+            bestIdx = i;
+        }
+    }
+    return bestIdx;
+}
+
+// Create a child node by applying the action at index `idx`. Decrements
+// the parent's unexpanded counter.
+Node *expand(Node *node, int idx)
+{
+    Node *child = allocNode();
+
+    child->state = node->state;
+    child->state.applyActions({node->actions[idx]});
+
+    node->children[idx] = child;
+    node->remainingUnexpandedChildren--;
+
+    return child;
+}
+
+void finalizeExpansionOnFirstVisit(Node *node)
+{
+    // Generate actions and fulfill children vector with NULLs to mark them as unexpanded.
+    node->actions = node->state.generatePossibleActions(0);
+    node->children.assign(node->actions.size(), nullptr);
+    node->remainingUnexpandedChildren = (int)node->actions.size();
+}
+
+float mcts(Node *node)
+{
+    // Leaf (visited once, no actions yet) -> generate actions and
+    // fill children with NULLs so we can track which slots remain.
+    if (node->actions.empty())
+        finalizeExpansionOnFirstVisit(node);
+
+    int childId;
+    Node *childNode;
+    float childValue;
+    if (node->remainingUnexpandedChildren > 0)
+    {
+        childId = selectUnexpandedChild(node);
+        childNode = expand(node, childId);
+        childValue = heuristic(childNode->state);
+    }
+    else
+    {
+        childId = selectChild(node);
+        childNode = node->children[childId];
+        childValue = mcts(childNode);
+    }
+
+    node->visits++;
+    node->score += childValue;
+
+    return childValue;
+}
+
+Action runMCTS(const State &rootState)
+{
+    resetNodePool();
+    Node *root = allocNode();
+    root->state = rootState;
+
+    auto start = chrono::steady_clock::now();
+    int iters = 0;
+    while (true)
+    {
+        auto elapsed = chrono::duration_cast<chrono::milliseconds>(
+                           chrono::steady_clock::now() - start)
+                           .count();
+        if (elapsed >= 45)
+            break;
+        if (nodeCount >= MAX_NODES - 64)
+            break;
+
+        mcts(root);
+        iters++;
+    }
+    cerr << "[MCTS] iters=" << iters << " nodes=" << nodeCount << endl;
+
+    // Pick the most-visited root child (robust child).
+    int bestIdx = -1;
+    int bestVisits = -1;
+    for (int i = 0; i < (int)root->children.size(); i++)
+    {
+        Node *c = root->children[i];
+        if (c && c->visits > bestVisits)
+        {
+            bestVisits = c->visits;
+            bestIdx = i;
+        }
+    }
+
+    if (bestIdx < 0 || root->actions.empty())
+        return Action::move(0, 0, 0);
+
+    return root->actions[bestIdx];
+}
 
 // =====================================================
 // PARSING
