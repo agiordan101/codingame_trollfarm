@@ -798,7 +798,7 @@ public:
             if (a.macroTaskFinished)
                 return;
 
-        // Idle turns 2..T-1: just grow trees and advance turn.
+        // Turn 2..T-1: just grow trees and advance turn.
         for (int i = 0; i < T - 2; i++)
         {
             updateTrees();
@@ -812,9 +812,8 @@ public:
         for (int i = 0; i < (int)set.actions.size(); i++)
         {
             Action &a = set.actions[i];
-            if (a.category == Action::PRIMITIVE)
-                continue;
 
+            // Teleport trolls 
             Troll *t = findTrollById(a.trollid);
             if (t)
             {
@@ -822,6 +821,7 @@ public:
                 t->y = a.y;
             }
 
+            // Execute terminal primitive for finished macro actions
             if (turns[i] == T)
             {
                 a.macroTaskFinished = true;
@@ -1392,35 +1392,21 @@ float heuristic(const State &s)
     float enRes = s.enemyShack.plum + s.enemyShack.lemon + s.enemyShack.apple +
                   s.enemyShack.banana + 4 * s.enemyShack.wood;
 
-    // Set each troll as 50 game points (arbitrary, just to value having more trolls on the board)
-    for (const auto &t : s.trolls)
-        myRes += 50;
-    for (const auto &t : s.enemyTrolls)
-        enRes += 50;
-
     for (const auto &t : s.trolls)
     {
-        int dist = bfs_dist_lookup[s.myShack.y][s.myShack.x][t.y][t.x];
-        if (dist <= 0)
-            dist = 20; // High value
+        // Having a troll is always good
+        myRes += 50;
 
-        // Weight carried fruits depending on the distance with its shacks
-        // 50% of shack value by default
-        // And go to 99% when next to shack
         int ressourceValue = 0.5f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 2 * t.carryWood;
-        myRes += ressourceValue + (ressourceValue / (1.1 * dist));
+        myRes += ressourceValue;
     }
     for (const auto &t : s.enemyTrolls)
     {
-        int dist = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][t.y][t.x];
-        if (dist <= 0)
-            dist = 20; // High value
+        // Having a troll is always good
+        enRes += 50;
 
-        // Weight carried fruits depending on the distance with its shack
-        // 50% of shack value by default
-        // And go to 99% when next to shack
         int ressourceValue = 0.5f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 2 * t.carryWood;
-        enRes += ressourceValue + (ressourceValue / (1.1 * dist));
+        enRes += ressourceValue;
     }
 
     // Score trees in [0,0.5] based on position relative to both shacks.
