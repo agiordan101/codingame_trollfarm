@@ -149,7 +149,7 @@ public:
     string resource;
     int moveSpeed = 0, carryCapacity = 0, harvestPower = 0, chopPower = 0;
 
-    int macroTurnCount = 0;
+    int macroStepsTaken = 0;
 
     // Primitive factories
     static Action move(int trollid, int playerid, int x, int y) { return Action(PRIMITIVE, MOVE, trollid, playerid, x, y); }
@@ -173,6 +173,12 @@ public:
     // Primitives: set macroTaskFinished and return *this.
     // Macros: move toward (x,y); execute terminal primitive when arrived.
     Action findNextPrimitiveAction(const State &s);
+
+    // Turns until this action finishes given the current state.
+    // Primitives: 1. Macros: 1 (terminal primitive) + ceil(bfs_dist / movementSpeed).
+    int macroTurnCount(const State &s) const;
+
+    Action terminalPrimitive() const;
 
     string toString() const
     {
@@ -759,43 +765,70 @@ public:
 
     void applyMacroActions(ActionSet &set)
     {
-        // int turnStart = turn;
         if (set.actions.size() == 0)
         {
             cerr << "applyMacroActions: Applying empty ActionSet !!!" << endl;
             exit(0);
         }
 
-        // Primitives finish the turn they execute. Macros finish when their own
-        // findNextPrimitiveAction sets macroTaskFinished.
-        bool anyFinished = false;
-        int safety = 0;
-        while (!anyFinished)
+        // Per-action turn count: macros = 1 + ceil(bfs/ms), primitives = 1.
+        // T = number of game turns to advance before at least one action finishes.
+        vector<int> turns;
+        turns.reserve(set.actions.size());
+        for (Action &a : set.actions)
         {
-            if (++safety > 50)
+            if (a.macroTaskFinished)
             {
-                cerr << "applyMacroActions stuck, turn=" << turn << " set=" << set.toString() << endl;
+                cerr << "Macro action " << a.toString() << " is already finished before using it !!! " << turn << endl;
                 exit(0);
             }
+            turns.push_back(a.macroTurnCount(*this));
+        }
+        int T = *min_element(turns.begin(), turns.end());
 
-            vector<Action> primitiveActions;
-            primitiveActions.reserve(set.actions.size());
+        // Turn 1: real moves via findNextPrimitiveAction (BFS-based moveToward).
+        vector<Action> primitiveActions;
+        primitiveActions.reserve(set.actions.size());
+        for (Action &a : set.actions)
+            primitiveActions.push_back(a.findNextPrimitiveAction(*this));
+        applyActions(primitiveActions);
 
-            for (Action &a : set.actions)
+        // If any action finished on turn 1, we're done.
+        for (const Action &a : set.actions)
+            if (a.macroTaskFinished)
+                return;
+
+        // Idle turns 2..T-1: just grow trees and advance turn.
+        for (int i = 0; i < T - 2; i++)
+        {
+            updateTrees();
+            turn++;
+        }
+
+        // Turn T: teleport every macro troll to its target; finishing macros execute
+        // their terminal primitive. Non-finishing macros stay in `set` and will
+        // finish in 1 turn next time applyMacroActions is called (troll already at target).
+        vector<Action> finalPrimitives;
+        for (int i = 0; i < (int)set.actions.size(); i++)
+        {
+            Action &a = set.actions[i];
+            if (a.category == Action::PRIMITIVE)
+                continue;
+
+            Troll *t = findTrollById(a.trollid);
+            if (t)
             {
-                if (a.macroTaskFinished)
-                {
-                    cerr << "Macro action " << a.toString() << " is already finished before using it !!! " << turn << endl;
-                    exit(0);
-                }
-
-                primitiveActions.push_back(a.findNextPrimitiveAction(*this));
-                if (a.macroTaskFinished)
-                    anyFinished = true;
+                t->x = a.x;
+                t->y = a.y;
             }
 
-            applyActions(primitiveActions);
+            if (turns[i] == T)
+            {
+                a.macroTaskFinished = true;
+                finalPrimitives.push_back(a.terminalPrimitive());
+            }
         }
+        applyActions(finalPrimitives);
     }
 
     void applyActions(const vector<Action> &actions)
@@ -1220,7 +1253,7 @@ Action Action::moveToward(const State &s, const Troll &t, int targetX, int targe
 
 Action Action::findNextPrimitiveAction(const State &s)
 {
-    macroTurnCount++;
+    macroStepsTaken++;
 
     if (category == PRIMITIVE)
     {
@@ -1232,7 +1265,7 @@ Action Action::findNextPrimitiveAction(const State &s)
     // is forced to finish. Prevents infinite loops if pathing gets permanently
     // blocked (e.g. mutually-blocking trolls beyond moveToward's heuristic).
     constexpr int MAX_MACRO_TURNS = 20;
-    if (macroTurnCount >= MAX_MACRO_TURNS)
+    if (macroStepsTaken >= MAX_MACRO_TURNS)
     {
         cerr << "Macro action " << toString() << " forced to finish after reaching turn limit of " << MAX_MACRO_TURNS << endl;
         macroTaskFinished = true;
@@ -1248,9 +1281,11 @@ Action Action::findNextPrimitiveAction(const State &s)
 
     // Execute terminal primitive only once arrived
     macroTaskFinished = true;
+    return terminalPrimitive();
+}
 
-    // cerr << "Macro action " << toString() << " FINISHED in " << macroTurnCount << " turns" << endl;
-
+Action Action::terminalPrimitive() const
+{
     switch (type)
     {
     case MOVE_AND_HARVEST_ONCE:
@@ -1265,9 +1300,29 @@ Action Action::findNextPrimitiveAction(const State &s)
         return Action::drop(trollid, playerid);
     case MOVE_AND_MINE_ONCE:
         return Action::mine(trollid, playerid);
+    default:
+        return *this;
     }
+}
 
-    return *this;
+int Action::macroTurnCount(const State &s) const
+{
+    if (category == PRIMITIVE)
+        return 1;
+
+    const Troll *t = findTrollInState(s);
+    if (!t)
+        return 1;
+
+    if (t->x == x && t->y == y)
+        return 1;
+
+    int d = bfs_dist_lookup[t->y][t->x][y][x];
+    if (d < 0)
+        return 1;
+
+    int moveTurns = (d + t->movementSpeed - 1) / t->movementSpeed;
+    return moveTurns + 1;
 }
 
 // =====================================================
