@@ -78,6 +78,15 @@
         Exemple : Pas besoin d'ancitiper que planter 2 arbre différents en même temps sur la même case ne résulte en rien.
         Par contre : Simuler que 2 trolls coupent le même arbre en même temps et la répartition du bois est important
 
+        L'ordre du gold path est trop souvent les actions :
+            Gold path step 1 | Actions: MOVE_AND_PLANT 0 4 3 LEMON;  | Visits=111 score=-4696.24
+            Gold path step 2 | Actions: MOVE_AND_HARVEST 0 5 1;  | Visits=5 score=-206.503
+            Gold path step 3 | Actions: MOVE_AND_CHOP 0 14 8;  | Visits=1 score=-42.793
+        
+        Est ce que forcer des primitive action en step 1 est vraiment utile ?
+        Forcer des primitive action en step 1 empêche de réutiliser l'arbre entre les turns. Parce que la node 1 change tous le temps même si l'action 2 est toujours la meme macro action.
+        
+
 */
 
 using namespace std;
@@ -140,6 +149,8 @@ public:
     string resource;
     int moveSpeed = 0, carryCapacity = 0, harvestPower = 0, chopPower = 0;
 
+    int macroTurnCount = 0;
+
     // Primitive factories
     static Action move(int trollid, int playerid, int x, int y) { return Action(PRIMITIVE, MOVE, trollid, playerid, x, y); }
     static Action harvest(int trollid, int playerid) { return Action(PRIMITIVE, HARVEST, trollid, playerid); }
@@ -183,6 +194,18 @@ public:
             return "TRAIN " + to_string(moveSpeed) + " " + to_string(carryCapacity) + " " + to_string(harvestPower) + " " + to_string(chopPower);
         case MINE:
             return "MINE " + to_string(trollid);
+        case MOVE_AND_HARVEST_ONCE:
+            return "MOVE_AND_HARVEST " + to_string(trollid) + " " + to_string(x) + " " + to_string(y);
+        case MOVE_AND_CHOP:
+            return "MOVE_AND_CHOP " + to_string(trollid) + " " + to_string(x) + " " + to_string(y);
+        case MOVE_AND_PLANT:
+            return "MOVE_AND_PLANT " + to_string(trollid) + " " + to_string(x) + " " + to_string(y) + " " + resource;
+        case MOVE_AND_PICK:
+            return "MOVE_AND_PICK " + to_string(trollid) + " " + to_string(x) + " " + to_string(y) + " " + resource;
+        case MOVE_AND_DROP:
+            return "MOVE_AND_DROP " + to_string(trollid) + " " + to_string(x) + " " + to_string(y);
+        case MOVE_AND_MINE_ONCE:
+            return "MOVE_AND_MINE " + to_string(trollid) + " " + to_string(x) + " " + to_string(y);
         default:
             return "";
         }
@@ -203,6 +226,14 @@ public:
     vector<Action> actions;
 
     void add(Action a) { actions.push_back(std::move(a)); }
+
+    string toString() const
+    {
+        string res;
+        for (const Action &a : actions)
+            res += a.toString() + "; ";
+        return res;
+    }
 };
 
 // =====================================================
@@ -1308,11 +1339,15 @@ Action Action::moveToward(const State &s, const Troll &t, int targetX, int targe
                 bestY = cy;
             }
         }
+
+    // cerr << "Macro action " << toString() << " - Turn " << macroTurnCount << " - Go to " << bestX << ", " << bestY << endl;
     return Action::move(trollid, playerid, bestX, bestY);
 }
 
 Action Action::findNextPrimitiveAction(const State &s)
 {
+    macroTurnCount++;
+
     if (category == PRIMITIVE)
     {
         macroTaskFinished = true;
@@ -1322,10 +1357,14 @@ Action Action::findNextPrimitiveAction(const State &s)
     // Move toward destination
     const Troll *t = findTrollInState(s);
     if (t && !(t->x == x && t->y == y))
+    {
         return moveToward(s, *t, x, y);
+    }
 
     // Execute terminal primitive only once arrived.
     macroTaskFinished = true;
+
+    // cerr << "Macro action " << toString() << " FINISHED in " << macroTurnCount << " turns" << endl;
 
     switch (type)
     {
@@ -1518,6 +1557,9 @@ Node *expand(Node *node, int idx)
     // Apply on a local copy so the parent's stored ActionSet is preserved while
     // applyMacroActions mutates per-action macroTaskFinished flags.
     ActionSet applied = node->actionSets[idx];
+
+    // cerr << "[MCTS] Expanding child " << idx << " / " << node->actionSets.size() << " with ActionSet : " << applied.toString() << endl;
+
     child->state.applyMacroActions(applied);
 
     // Carry still-unfinished macros over to the child — those trolls remain busy.
@@ -1531,20 +1573,24 @@ Node *expand(Node *node, int idx)
     return child;
 }
 
-void finalizeExpansionOnFirstVisit(Node *node)
+void finalizeExpansionOnFirstVisit(Node *node, bool primitiveOnly)
 {
+    // cerr << "[MCTS] Finalizing expansion on first visit at depth 0, primitiveOnly=" << primitiveOnly << endl;
+
     // Generate action sets and fulfill children vector with NULLs to mark them as unexpanded.
-    node->actionSets = node->state.generatePlayerActionSets(0, true, node->base);
+    node->actionSets = node->state.generatePlayerActionSets(0, primitiveOnly, node->base);
     node->children.assign(node->actionSets.size(), nullptr);
     node->remainingUnexpandedChildren = (int)node->actionSets.size();
 }
 
-float mcts(Node *node)
+float mcts(Node *node, int depth = 0)
 {
+    // cerr << "[MCTS] Visiting node at depth " << depth << " with " << node->visits << " visits and score " << node->score << endl;
+
     // Leaf (visited once, no actions yet) -> generate actions and
     // fill children with NULLs so we can track which slots remain.
     if (node->actionSets.empty())
-        finalizeExpansionOnFirstVisit(node);
+        finalizeExpansionOnFirstVisit(node, depth == 0);
 
     int childId;
     Node *childNode;
@@ -1562,13 +1608,46 @@ float mcts(Node *node)
     {
         childId = selectChild(node);
         childNode = node->children[childId];
-        childValue = mcts(childNode);
+        childValue = mcts(childNode, depth + 1);
 
         node->visits++;
         node->score += childValue;
     }
 
     return childValue;
+}
+
+int getMostVisitedChild(Node *node)
+{
+    int bestIdx = -1;
+    int bestVisits = -1;
+    for (int i = 0; i < (int)node->children.size(); i++)
+    {
+        Node *c = node->children[i];
+        // vector<Action> &actions = node->actionSets[i].actions;
+        
+        // cerr << "ActionSet " << i << ": visits=" << (c->visits) << " quality=" << (c->score / c->visits) << " | Actions :";
+        // for (const auto &a : actions)
+        //     cerr << " | " << a.toString();
+        // cerr << endl;
+
+        if (c->visits > bestVisits)
+        {
+            bestVisits = c->visits;
+            bestIdx = i;
+        }
+    }
+    return bestIdx;
+}
+
+void displayGoldPath(Node *node, int depth = 0)
+{
+    int bestIdx = getMostVisitedChild(node);
+    Node *childNode = node->children[bestIdx];
+    cerr << "Gold path step " << depth << " | Actions: " << node->actionSets[bestIdx].toString() << " | Visits=" << childNode->visits << " score=" << childNode->score << endl;
+
+    if (childNode->visits > 1)
+        displayGoldPath(childNode, depth + 1);
 }
 
 vector<Action> runMCTS(const State &rootState)
@@ -1584,39 +1663,22 @@ vector<Action> runMCTS(const State &rootState)
         auto elapsed = chrono::duration_cast<chrono::milliseconds>(
                            chrono::steady_clock::now() - start)
                            .count();
-        if (elapsed >= 45)
+        if (elapsed >= 40)
             break;
         if (nodeCount >= MAX_NODES - 64)
             break;
 
-        mcts(root);
+        float childValue = mcts(root);
+
+        root->visits++;
+        root->score += childValue;
         iters++;
     }
+    
     cerr << "[MCTS] iters=" << iters << " nodes=" << nodeCount << endl;
+    displayGoldPath(root);
 
-    // Pick the most-visited root child (robust child).
-    int bestIdx = -1;
-    int bestVisits = -1;
-    for (int i = 0; i < (int)root->children.size(); i++)
-    {
-        Node *c = root->children[i];
-        vector<Action> &actions = root->actionSets[i].actions;
-
-        cerr << "ActionSet " << i << ": visits=" << (c->visits) << " quality=" << (c->score / c->visits) << " | Actions :";
-        for (const auto &a : actions)
-            cerr << " | " << a.toString();
-        cerr << endl;
-
-        if (c->visits > bestVisits)
-        {
-            bestVisits = c->visits;
-            bestIdx = i;
-        }
-    }
-
-    if (bestIdx < 0 || root->actionSets.empty())
-        return vector<Action>{};
-
+    int bestIdx = getMostVisitedChild(root);
     return root->actionSets[bestIdx].actions;
 }
 
