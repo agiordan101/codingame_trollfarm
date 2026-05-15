@@ -519,7 +519,7 @@ private:
     {
         vector<Action> actions;
 
-        if (t.harvestPower > 0 && t.canCarry())
+        if (turn < 200 && t.harvestPower > 0 && t.canCarry())
         {
             // MOVE_AND_HARVEST_ONCE: closest tree of each fruit type that has fruits
             const string fruitTypes[4] = {"PLUM", "LEMON", "APPLE", "BANANA"};
@@ -546,7 +546,7 @@ private:
         }
 
         // MOVE_AND_CHOP: every reachable tree
-        if (t.chopPower > 0)
+        if (turn > 200 && t.chopPower > 0)
         {
             for (const auto &tr : trees)
             {
@@ -633,7 +633,7 @@ private:
         }
 
         // MOVE_AND_MINE_ONCE: closest reachable walkable cell adjacent to closest mine
-        if (t.chopPower > 0 && t.canCarry())
+        if (turn < 200 && t.chopPower > 0 && t.canCarry())
         {
             // Can be precomputed
             constexpr int dxs[4] = {1, -1, 0, 0};
@@ -700,6 +700,12 @@ public:
             }
 
             vector<Action> trollActions = generateTrollMacroActions(t, shack, playerTrolls);
+            if (trollActions.empty())
+            {
+                cerr << "No actions available for troll " << t.id << " at turn " << turn << endl;
+                exit(0);
+            }
+
             perTroll.push_back(move(trollActions));
         }
 
@@ -753,16 +759,36 @@ public:
 
     void applyMacroActions(ActionSet &set)
     {
+        // int turnStart = turn;
+        if (set.actions.size() == 0)
+        {
+            cerr << "applyMacroActions: Applying empty ActionSet !!!" << endl;
+            exit(0);
+        }
+
         // Primitives finish the turn they execute. Macros finish when their own
         // findNextPrimitiveAction sets macroTaskFinished.
         bool anyFinished = false;
+        int safety = 0;
         while (!anyFinished)
         {
+            if (++safety > 50)
+            {
+                cerr << "applyMacroActions stuck, turn=" << turn << " set=" << set.toString() << endl;
+                exit(0);
+            }
+
             vector<Action> primitiveActions;
             primitiveActions.reserve(set.actions.size());
 
             for (Action &a : set.actions)
             {
+                if (a.macroTaskFinished)
+                {
+                    cerr << "Macro action " << a.toString() << " is already finished before using it !!! " << turn << endl;
+                    exit(0);
+                }
+
                 primitiveActions.push_back(a.findNextPrimitiveAction(*this));
                 if (a.macroTaskFinished)
                     anyFinished = true;
@@ -1152,8 +1178,21 @@ const Troll *Action::findTrollInState(const State &s) const
 
 // Returns Action::move toward (targetX, targetY) picking the reachable cell
 // within t.movementSpeed that minimises remaining BFS distance to the target.
+// Skips ally-occupied cells. If no improving free cell exists, the troll stays
+// put — picking a worsening cell would cause A→E→A oscillation because the
+// BFS would just pull the troll back next turn. Repeated stalls are bounded by
+// MAX_MACRO_TURNS in findNextPrimitiveAction, so MCTS sees the bad outcome.
 Action Action::moveToward(const State &s, const Troll &t, int targetX, int targetY) const
 {
+    const vector<Troll> &allies = (t.player == 0) ? s.trolls : s.enemyTrolls;
+
+    auto cellOccupied = [&](int cx, int cy) {
+        for (const Troll &ally : allies)
+            if (ally.id != t.id && ally.x == cx && ally.y == cy)
+                return true;
+        return false;
+    };
+
     int bestX = t.x, bestY = t.y;
     int bestDist = bfs_dist_lookup[t.y][t.x][targetY][targetX];
 
@@ -1166,6 +1205,8 @@ Action Action::moveToward(const State &s, const Troll &t, int targetX, int targe
             int remDist = bfs_dist_lookup[cy][cx][targetY][targetX];
             if (remDist < 0)
                 continue;
+            if (cellOccupied(cx, cy))
+                continue;
             if (bestDist < 0 || remDist < bestDist)
             {
                 bestDist = remDist;
@@ -1174,7 +1215,6 @@ Action Action::moveToward(const State &s, const Troll &t, int targetX, int targe
             }
         }
 
-    // cerr << "Macro action " << toString() << " - Turn " << macroTurnCount << " - Go to " << bestX << ", " << bestY << endl;
     return Action::move(trollid, playerid, bestX, bestY);
 }
 
@@ -1188,6 +1228,17 @@ Action Action::findNextPrimitiveAction(const State &s)
         return *this;
     }
 
+    // Defensive cap: a macro that hasn't reached its target after MAX_MACRO_TURNS
+    // is forced to finish. Prevents infinite loops if pathing gets permanently
+    // blocked (e.g. mutually-blocking trolls beyond moveToward's heuristic).
+    constexpr int MAX_MACRO_TURNS = 20;
+    if (macroTurnCount >= MAX_MACRO_TURNS)
+    {
+        cerr << "Macro action " << toString() << " forced to finish after reaching turn limit of " << MAX_MACRO_TURNS << endl;
+        macroTaskFinished = true;
+        return *this;
+    }
+
     // Move toward destination
     const Troll *t = findTrollInState(s);
     if (t && !(t->x == x && t->y == y))
@@ -1195,7 +1246,7 @@ Action Action::findNextPrimitiveAction(const State &s)
         return moveToward(s, *t, x, y);
     }
 
-    // Execute terminal primitive only once arrived.
+    // Execute terminal primitive only once arrived
     macroTaskFinished = true;
 
     // cerr << "Macro action " << toString() << " FINISHED in " << macroTurnCount << " turns" << endl;
@@ -1243,6 +1294,12 @@ int nodeCount = 0;
 
 Node *allocNode()
 {
+    if (nodeCount >= MAX_NODES - 1)
+    {
+        cerr << "Node pool exhausted!" << endl;
+        exit(1);
+    }
+
     Node *n = &nodePool[nodeCount++];
 
     n->base.actions.clear();
@@ -1419,6 +1476,12 @@ float mcts(Node *node, int depth = 0)
 {
     // cerr << "[MCTS] Visiting node at depth " << depth << " with " << node->visits << " visits and score " << node->score << endl;
 
+    if (depth > 100)
+    {
+        cerr << "[MCTS] deep depth=" << depth << " nodes=" << nodeCount << endl;
+        exit(0);
+    }
+
     // Leaf (visited once, no actions yet) -> generate actions and
     // fill children with NULLs so we can track which slots remain.
     if (node->actionSets.empty())
@@ -1554,6 +1617,7 @@ void parseTrees(State &state)
     int n;
     cin >> n;
 
+    state.trees.clear();
     state.trees.resize(n);
     for (auto &t : state.trees)
         cin >> t.type >> t.x >> t.y >> t.size >> t.health >> t.fruits >> t.cooldown;
