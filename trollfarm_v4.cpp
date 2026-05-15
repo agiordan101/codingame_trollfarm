@@ -82,10 +82,10 @@
             Gold path step 1 | Actions: MOVE_AND_PLANT 0 4 3 LEMON;  | Visits=111 score=-4696.24
             Gold path step 2 | Actions: MOVE_AND_HARVEST 0 5 1;  | Visits=5 score=-206.503
             Gold path step 3 | Actions: MOVE_AND_CHOP 0 14 8;  | Visits=1 score=-42.793
-        
+
         Est ce que forcer des primitive action en step 1 est vraiment utile ?
         Forcer des primitive action en step 1 empêche de réutiliser l'arbre entre les turns. Parce que la node 1 change tous le temps même si l'action 2 est toujours la meme macro action.
-        
+
 
 */
 
@@ -515,158 +515,12 @@ public:
     vector<Troll> enemyTrolls;
 
 private:
-    // actions[i] corresponds to playerTrolls[i] (TRAIN not included here)
-    bool isValidActionSet(const vector<Action> &actions, const vector<Troll> &playerTrolls) const
-    {
-        int n = (int)actions.size();
-
-        // Collect MOVE destinations; reject duplicate destinations (rule 1)
-        set<pair<int, int>> moveDests;
-        for (int i = 0; i < n; i++)
-        {
-            const Action &a = actions[i];
-            if (a.type != Action::MOVE)
-                continue;
-            if (!moveDests.insert({a.x, a.y}).second)
-                return false;
-        }
-
-        // Reject MOVE into a cell occupied by a non-moving ally (rule 2)
-        for (int i = 0; i < n; i++)
-        {
-            const Action &a = actions[i];
-            if (a.type != Action::MOVE)
-                continue;
-            for (int j = 0; j < n; j++)
-            {
-                if (j == i || actions[j].type == Action::MOVE)
-                    continue;
-                if (playerTrolls[j].x == a.x && playerTrolls[j].y == a.y)
-                    return false;
-            }
-        }
-
-        return true;
-    }
-
-    void generateMoveActions(const Troll &t, const vector<Troll> &allies, vector<Action> &actions) const
-    {
-        for (int y = 0; y < h; y++)
-        {
-            for (int x = 0; x < w; x++)
-            {
-                int d = bfs_dist_lookup[t.y][t.x][y][x];
-                if (d < 1 || d > t.movementSpeed)
-                    continue;
-
-                bool occupied = false;
-                for (const auto &ally : allies)
-                {
-                    if (ally.id != t.id && ally.x == x && ally.y == y)
-                    {
-                        occupied = true;
-                        break;
-                    }
-                }
-                if (!occupied)
-                    actions.push_back(Action::move(t.id, t.player, x, y));
-            }
-        }
-    }
-
-    void generateTrollPrimitiveActions(const Troll &t, const Shack &shack, const vector<Troll> &allies, vector<Action> &actions) const
-    {
-        // MOVE: Walkable cells in move speed range, with no ally on it
-        generateMoveActions(t, allies, actions);
-
-        // MINE: troll is on an iron mine
-        for (const auto &mine : ironMines)
-        {
-            if (mine.x == t.x && mine.y == t.y)
-            {
-                if (t.chopPower > 0)
-                    actions.push_back(Action::mine(t.id, t.player));
-                break;
-            }
-        }
-
-        // CHOP: on tree
-        const Tree *onTree = nullptr;
-        for (const auto &tr : trees)
-        {
-            if (tr.x == t.x && tr.y == t.y)
-            {
-                onTree = &tr;
-
-                // No need for carrying capacity left: We could want to chop tree to deny it
-                if (t.chopPower > 0)
-                    actions.push_back(Action::chop(t.id, t.player));
-
-                break;
-            }
-        }
-
-        if (onTree)
-        {
-            // HARVEST: on tree with fruits and carry capacity available
-            if (onTree->fruits > 0 && t.harvestPower > 0 && t.canCarry())
-                actions.push_back(Action::harvest(t.id, t.player));
-        }
-        else
-        {
-            // PLANT: on grass with no tree under, for any fruit type carried
-            if (t.carryPlum > 0)
-                actions.push_back(Action::plant(t.id, t.player, "PLUM"));
-            if (t.carryLemon > 0)
-                actions.push_back(Action::plant(t.id, t.player, "LEMON"));
-            if (t.carryApple > 0)
-                actions.push_back(Action::plant(t.id, t.player, "APPLE"));
-            if (t.carryBanana > 0)
-                actions.push_back(Action::plant(t.id, t.player, "BANANA"));
-        }
-
-        if (manhattan(t.x, t.y, shack.x, shack.y) <= 1)
-        {
-            if (t.canCarry())
-            {
-                // PICK: when adjacent to own shack, carry capacity available and fruit is available in shack
-                if (shack.plum > 0)
-                    actions.push_back(Action::pick(t.id, t.player, "PLUM"));
-                if (shack.lemon > 0)
-                    actions.push_back(Action::pick(t.id, t.player, "LEMON"));
-                if (shack.apple > 0)
-                    actions.push_back(Action::pick(t.id, t.player, "APPLE"));
-                if (shack.banana > 0)
-                    actions.push_back(Action::pick(t.id, t.player, "BANANA"));
-            }
-
-            // DROP: adjacent to own shack, with something to drop
-            if (t.isCarrying())
-                actions.push_back(Action::drop(t.id, t.player));
-        }
-    }
-
     vector<Action> generateTrollMacroActions(const Troll &t, const Shack &shack, const vector<Troll> &allies) const
     {
         vector<Action> actions;
 
         if (t.harvestPower > 0 && t.canCarry())
         {
-            // Detect tree under troll
-            const Tree *onTree = nullptr;
-            for (const auto &tr : trees)
-            {
-                if (tr.x == t.x && tr.y == t.y)
-                {
-                    onTree = &tr;
-                    break;
-                }
-            }
-
-            // HARVEST: troll is on a tree with fruits (emitted as PRIMITIVE)
-            if (onTree && onTree->fruits > 0)
-                actions.push_back(Action::harvest(t.id, t.player));
-
             // MOVE_AND_HARVEST_ONCE: closest tree of each fruit type that has fruits
             const string fruitTypes[4] = {"PLUM", "LEMON", "APPLE", "BANANA"};
             for (const string &ft : fruitTypes)
@@ -714,7 +568,7 @@ private:
                     if (!isCellWalkable(grid[y][x]))
                         continue;
                     int dShack = bfs_dist_lookup[shack.y][shack.x][y][x];
-                    if (dShack < 0 || dShack > 2)
+                    if (dShack != 1)
                         continue;
 
                     if (findTreeIndex(x, y) >= 0)
@@ -738,6 +592,8 @@ private:
         bool canDrop = t.isCarrying();
         if (canPick || canDrop)
         {
+            // Can be precomputed
+            // Find the closest walkable cell adjacent to the shack, to use as MOVE destination for both PICK and DROP macro actions
             constexpr int dxs[4] = {1, -1, 0, 0};
             constexpr int dys[4] = {0, 0, 1, -1};
             int shackAdjX = -1, shackAdjY = -1, shackAdjDist = -1;
@@ -809,19 +665,6 @@ private:
                 actions.push_back(Action::moveAndMine(t.id, t.player, bestX, bestY));
         }
 
-        // MINE: troll is adjacent to an iron mine (emitted as PRIMITIVE)
-        if (t.chopPower > 0 && t.canCarry())
-        {
-            for (const auto &mine : ironMines)
-            {
-                if (manhattan(t.x, t.y, mine.x, mine.y) == 1)
-                {
-                    actions.push_back(Action::mine(t.id, t.player));
-                    break;
-                }
-            }
-        }
-
         return actions;
     }
 
@@ -830,7 +673,7 @@ public:
     // ACTION GENERATION
     // =====================================================
 
-    vector<ActionSet> generatePlayerActionSets(int player, bool primitiveOnly = false, const ActionSet &base = {}) const
+    vector<ActionSet> generatePlayerActionSets(int player, const ActionSet &base = {}) const
     {
         const vector<Troll> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
         const Shack &shack = (player == 0) ? myShack : enemyShack;
@@ -856,11 +699,7 @@ public:
                 continue;
             }
 
-            vector<Action> trollActions;
-            if (primitiveOnly)
-                generateTrollPrimitiveActions(t, shack, playerTrolls, trollActions);
-            else
-                trollActions = generateTrollMacroActions(t, shack, playerTrolls);
+            vector<Action> trollActions = generateTrollMacroActions(t, shack, playerTrolls);
             perTroll.push_back(move(trollActions));
         }
 
@@ -881,15 +720,10 @@ public:
             combos = move(next);
         }
 
-        // Filter impossible combinations (primitive-only path matches former behavior)
-        if (primitiveOnly)
-        {
-            combos.erase(
-                remove_if(combos.begin(), combos.end(),
-                          [&](const vector<Action> &actions)
-                          { return !isValidActionSet(actions, playerTrolls); }),
-                combos.end());
-        }
+        // TODO: Remove impossible combinaisons of macro actions when t >= 2 ?
+        // - CHOP the same tree twice
+        // - PLANT on the same cell twice
+        // - ?
 
         // If TRAIN is possible, append it to every combo (always emitted as PRIMITIVE)
         int n = (int)playerTrolls.size();
@@ -1573,12 +1407,10 @@ Node *expand(Node *node, int idx)
     return child;
 }
 
-void finalizeExpansionOnFirstVisit(Node *node, bool primitiveOnly)
+void finalizeExpansionOnFirstVisit(Node *node)
 {
-    // cerr << "[MCTS] Finalizing expansion on first visit at depth 0, primitiveOnly=" << primitiveOnly << endl;
-
     // Generate action sets and fulfill children vector with NULLs to mark them as unexpanded.
-    node->actionSets = node->state.generatePlayerActionSets(0, primitiveOnly, node->base);
+    node->actionSets = node->state.generatePlayerActionSets(0, node->base);
     node->children.assign(node->actionSets.size(), nullptr);
     node->remainingUnexpandedChildren = (int)node->actionSets.size();
 }
@@ -1590,7 +1422,7 @@ float mcts(Node *node, int depth = 0)
     // Leaf (visited once, no actions yet) -> generate actions and
     // fill children with NULLs so we can track which slots remain.
     if (node->actionSets.empty())
-        finalizeExpansionOnFirstVisit(node, depth == 0);
+        finalizeExpansionOnFirstVisit(node);
 
     int childId;
     Node *childNode;
@@ -1617,19 +1449,23 @@ float mcts(Node *node, int depth = 0)
     return childValue;
 }
 
-int getMostVisitedChild(Node *node)
+int getMostVisitedChild(Node *node, int depth = 0)
 {
     int bestIdx = -1;
     int bestVisits = -1;
     for (int i = 0; i < (int)node->children.size(); i++)
     {
         Node *c = node->children[i];
-        // vector<Action> &actions = node->actionSets[i].actions;
-        
-        // cerr << "ActionSet " << i << ": visits=" << (c->visits) << " quality=" << (c->score / c->visits) << " | Actions :";
-        // for (const auto &a : actions)
-        //     cerr << " | " << a.toString();
-        // cerr << endl;
+
+        if (depth == 0)
+        {
+            vector<Action> &actions = node->actionSets[i].actions;
+
+            cerr << "ActionSet " << i << " / " << node->children.size() << ": visits=" << (c->visits) << " quality=" << (c->score / c->visits) << " | Actions :";
+            for (const auto &a : actions)
+                cerr << " | " << a.toString();
+            cerr << endl;
+        }
 
         if (c->visits > bestVisits)
         {
@@ -1642,12 +1478,12 @@ int getMostVisitedChild(Node *node)
 
 void displayGoldPath(Node *node, int depth = 0)
 {
-    int bestIdx = getMostVisitedChild(node);
+    int bestIdx = getMostVisitedChild(node, 999);
     Node *childNode = node->children[bestIdx];
     cerr << "Gold path step " << depth << " | Actions: " << node->actionSets[bestIdx].toString() << " | Visits=" << childNode->visits << " score=" << childNode->score << endl;
 
     if (childNode->visits > 1)
-        displayGoldPath(childNode, depth + 1);
+        displayGoldPath(childNode, 999);
 }
 
 vector<Action> runMCTS(const State &rootState)
@@ -1674,7 +1510,7 @@ vector<Action> runMCTS(const State &rootState)
         root->score += childValue;
         iters++;
     }
-    
+
     cerr << "[MCTS] iters=" << iters << " nodes=" << nodeCount << endl;
     displayGoldPath(root);
 
@@ -1766,11 +1602,12 @@ void parseTrolls(State &state)
 // ACTION OUTPUT
 // =====================================================
 
-void displayActions(const vector<Action> &actions)
+void displayActions(vector<Action> &actions, const State &state)
 {
     for (int i = 0; i < (int)actions.size(); i++)
     {
-        cout << actions[i].toString();
+        Action primitive = actions[i].findNextPrimitiveAction(state);
+        cout << primitive.toString();
         if (i + 1 < (int)actions.size())
             cout << ";";
     }
@@ -1798,12 +1635,9 @@ int main()
     buildBfsLookup(w, h, state.grid);
 
     State prevState;
-    int turn = 0;
 
     while (true)
     {
-        turn++;
-
         prevState = state;
 
         parseResources(state);
@@ -1812,6 +1646,6 @@ int main()
 
         vector<Action> actions = runMCTS(state);
 
-        displayActions(actions);
+        displayActions(actions, state);
     }
 }
