@@ -1419,7 +1419,7 @@ float heuristic(const State &s)
         if (dMy <= 0 || dEn <= 0)
             continue;
 
-        float treeScore = 2;
+        float treeScore = 1.5;
         if (s.isNearWater(tree.x, tree.y))
             treeScore *= 1.5;
 
@@ -1431,11 +1431,12 @@ float heuristic(const State &s)
         enRes += treeScore / dEn;
     }
 
-    return myRes - enRes;
+    constexpr float SCALE = 500.0f;
+    return max(-1.0f, min(1.0f, (myRes - enRes) / SCALE));
 }
 
-constexpr float UCT_C = 1.5;
-// constexpr float UCT_C = 1.41421356f;
+// constexpr float UCT_C = 1.5;
+constexpr float UCT_C = 1.41421356f;
 
 int selectUnexpandedChild(Node *node)
 {
