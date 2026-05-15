@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <chrono>
 #include <variant>
+#include <unordered_map>
 
 /*
     3
@@ -552,7 +553,7 @@ private:
         }
 
         // MOVE_AND_CHOP: N closest trees to shack, where N = troll count
-        if (turn > 200 && t.chopPower > 0)
+        if (turn > 200 && t.chopPower > 0 && t.canCarry())
         {
             int N = (int)allies.size();
             vector<pair<int, int>> byDist; // (dist from shack, tree index)
@@ -686,14 +687,20 @@ public:
     // ACTION GENERATION
     // =====================================================
 
-    vector<ActionSet> generatePlayerActionSets(int player, const ActionSet &base = {}) const
+    // Returns one candidate action list per troll (no cartesian product — DUCT-friendly).
+    // Trolls busy on a macro inherited from `base` get a single-action list (the kept macro).
+    // Also reports whether TRAIN is affordable; the caller appends TRAIN at apply time.
+    void generatePerTrollMacroActions(int player,
+                                      const ActionSet &base,
+                                      vector<vector<Action>> &outPerTroll,
+                                      bool &outCanTrain) const
     {
         const vector<Troll> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
         const Shack &shack = (player == 0) ? myShack : enemyShack;
 
-        // For each troll, either keep the unfinished macro inherited from `base`
-        // or generate fresh candidates. Trolls busy on a macro are not branched on.
-        vector<vector<Action>> perTroll;
+        outPerTroll.clear();
+        outPerTroll.reserve(playerTrolls.size());
+
         for (const Troll &t : playerTrolls)
         {
             const Action *kept = nullptr;
@@ -708,7 +715,7 @@ public:
 
             if (kept)
             {
-                perTroll.push_back({*kept});
+                outPerTroll.push_back({*kept});
                 continue;
             }
 
@@ -719,51 +726,14 @@ public:
                 exit(0);
             }
 
-            perTroll.push_back(move(trollActions));
+            outPerTroll.push_back(move(trollActions));
         }
 
-        // Cartesian product across trolls
-        vector<vector<Action>> combos;
-        combos.push_back({});
-        for (const auto &trollActions : perTroll)
-        {
-            vector<vector<Action>> next;
-            next.reserve(combos.size() * trollActions.size());
-            for (const vector<Action> &existing : combos)
-                for (const Action &a : trollActions)
-                {
-                    vector<Action> actions = existing;
-                    actions.push_back(a);
-                    next.push_back(move(actions));
-                }
-            combos = move(next);
-        }
-
-        // TODO: Remove impossible combinaisons of macro actions when t >= 2 ?
-        // - CHOP the same tree twice
-        // - PLANT on the same cell twice
-        // - ?
-
-        // If TRAIN is possible, append it to every combo (always emitted as PRIMITIVE)
         int n = (int)playerTrolls.size();
-        bool canTrain = shack.plum >= n + 4 &&
-                        shack.lemon >= n + 4 &&
-                        shack.apple >= n + 4 &&
-                        shack.iron >= n + 4;
-
-        vector<ActionSet> result;
-        result.reserve(combos.size());
-        for (vector<Action> &actions : combos)
-        {
-            if (canTrain)
-                actions.push_back(Action::train(player, 2, 2, 2, 2));
-
-            ActionSet set;
-            set.actions = move(actions);
-            result.push_back(move(set));
-        }
-
-        return result;
+        outCanTrain = shack.plum >= n + 4 &&
+                      shack.lemon >= n + 4 &&
+                      shack.apple >= n + 4 &&
+                      shack.iron >= n + 4;
     }
 
     // =====================================================
@@ -1338,22 +1308,43 @@ int Action::macroTurnCount(const State &s) const
 // =====================================================
 
 constexpr int MAX_NODES = 100000;
+constexpr int MAX_TROLLS_PER_PLAYER = 8;
 
+// One bandit slot per (troll, candidate-action) pair.
+struct TrollActionStat
+{
+    int visits = 0;
+    float score = 0.0f;
+};
+
+// DUCT node: instead of enumerating the cartesian product of per-troll macros
+// as children, we keep per-troll bandits and lazily allocate child nodes keyed
+// by the joint action (one action index per troll).
 struct Node
 {
     State state;
-    // Unfinished macro actions inherited from parent's chosen ActionSet.
-    // These are reused for busy trolls when generating this node's children.
+    // Unfinished macro actions inherited from parent's chosen joint action.
+    // Trolls busy on a macro will appear in perTrollActions as a single-action list.
     ActionSet base;
-    vector<ActionSet> actionSets;
-    vector<Node *> children;
-    int remainingUnexpandedChildren = 0;
+
+    bool initialized = false;
+    bool canTrain = false;
+    int player = 0;
+
+    vector<vector<Action>> perTrollActions;        // [trollIdx][actionIdx]
+    vector<vector<TrollActionStat>> perTrollStats; // [trollIdx][actionIdx]
+
+    // children[jointKey] = child node reached by applying that joint.
+    // jointKey packs each troll's chosen actionIdx into 8 bits.
+    unordered_map<uint64_t, Node *> children;
+
     int visits = 0;
     float score = 0.0f;
 };
 
 Node nodePool[MAX_NODES];
 int nodeCount = 0;
+int g_rootTurn = 0;
 
 Node *allocNode()
 {
@@ -1366,9 +1357,12 @@ Node *allocNode()
     Node *n = &nodePool[nodeCount++];
 
     n->base.actions.clear();
-    n->actionSets.clear();
+    n->initialized = false;
+    n->canTrain = false;
+    n->player = 0;
+    n->perTrollActions.clear();
+    n->perTrollStats.clear();
     n->children.clear();
-    n->remainingUnexpandedChildren = 0;
     n->visits = 0;
     n->score = 0.0f;
 
@@ -1391,21 +1385,24 @@ float mapRange(float value, float inputMin, float inputMax, float outputMin, flo
 // evaluation when ready (tree counts, troll positioning, carried fruit, etc.).
 float heuristic(const State &s)
 {
-    constexpr int CHOPPING_TURN = 100;
+    constexpr int CHOPPING_TURN = 150;
     constexpr int MAX_TURN = 300;
 
+    float myGamePts = s.myShack.plum + s.myShack.lemon + s.myShack.apple +
+                      s.myShack.banana + 4 * s.myShack.wood;
+    float enGamePts = s.enemyShack.plum + s.enemyShack.lemon + s.enemyShack.apple +
+                      s.enemyShack.banana + 4 * s.enemyShack.wood;
+
     // Compute game points
-    float myRes = s.myShack.plum + s.myShack.lemon + s.myShack.apple +
-                  s.myShack.banana + 4 * s.myShack.wood;
-    float enRes = s.enemyShack.plum + s.enemyShack.lemon + s.enemyShack.apple +
-                  s.enemyShack.banana + 4 * s.enemyShack.wood;
+    float myRes = myGamePts;
+    float enRes = enGamePts;
 
     for (const auto &t : s.trolls)
     {
         // Having a troll is always good
         myRes += 50;
 
-        int ressourceValue = 0.5f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 2 * t.carryWood;
+        int ressourceValue = 0.25f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 1 * t.carryWood;
         myRes += ressourceValue;
     }
     for (const auto &t : s.enemyTrolls)
@@ -1413,7 +1410,7 @@ float heuristic(const State &s)
         // Having a troll is always good
         enRes += 50;
 
-        int ressourceValue = 0.5f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 2 * t.carryWood;
+        int ressourceValue = 0.25f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 1 * t.carryWood;
         enRes += ressourceValue;
     }
 
@@ -1421,38 +1418,79 @@ float heuristic(const State &s)
     // Cost = (trollCount + 4) of each. Bonus scales linearly up to 25 when fully ready.
     if (s.turn < MAX_TURN - CHOPPING_TURN)
     {
-        float myTrainCost = (float)((int)s.trolls.size() + 4);
-        float enTrainCost = (float)((int)s.enemyTrolls.size() + 4);
-        float myTrainReady = min(1.0f, min({(float)s.myShack.plum, (float)s.myShack.lemon,
-                                            (float)s.myShack.apple, (float)s.myShack.iron}) /
-                                           myTrainCost);
-        float enTrainReady = min(1.0f, min({(float)s.enemyShack.plum, (float)s.enemyShack.lemon,
-                                            (float)s.enemyShack.apple, (float)s.enemyShack.iron}) /
-                                           enTrainCost);
-        myRes += 25.0f * myTrainReady;
-        enRes += 25.0f * enTrainReady;
+        int statNumber = 4;
+        int myTrollCount = (int)s.trolls.size();
+        int enTrollCount = (int)s.enemyTrolls.size();
+
+        float myRessourceCost = myTrollCount + statNumber * statNumber;
+        float enRessourceCost = enTrollCount + statNumber * statNumber;
+
+        float myTrainReady = (min((float)s.myShack.plum, myRessourceCost) + min((float)s.myShack.lemon, myRessourceCost) +
+                              min((float)s.myShack.apple, myRessourceCost) + min((float)s.myShack.iron, myRessourceCost)) /
+                             (4.0f * myRessourceCost);
+        float enTrainReady = (min((float)s.enemyShack.plum, enRessourceCost) + min((float)s.enemyShack.lemon, enRessourceCost) +
+                              min((float)s.enemyShack.apple, enRessourceCost) + min((float)s.enemyShack.iron, enRessourceCost)) /
+                             (4.0f * enRessourceCost);
+        myRes += 10.0f * myTrainReady;
+        enRes += 10.0f * enTrainReady;
     }
 
-    // Score trees in [0,0.5] based on position relative to both shacks.
-    // A tree closer to our shack is good for us (we can chop/harvest it faster), while a tree closer to enemy shack is bad for them (they can chop/harvest it faster).
-    // We add the net value to myRes so the difference myRes-enRes reflects tree map control.
+    // Score trees by type, keeping only the BEST per-type contribution for each
+    // player. Rationale: having three close PLUMs isn't 3x as valuable as one —
+    // a troll only needs one good source per fruit type. Encourages spreading
+    // plant choices across all types instead of clustering.
+    // Banana is ignored because it's not used for training. It should be chopped for wood
+    constexpr int NUM_FRUITS = 3;
+    const string fruitTypes[NUM_FRUITS] = {"PLUM", "LEMON", "APPLE"};
+    float bestMy[NUM_FRUITS] = {0.0f, 0.0f, 0.0f};
+    float bestEn[NUM_FRUITS] = {0.0f, 0.0f, 0.0f};
+
     for (const auto &tree : s.trees)
     {
+        int idx = -1;
+        for (int i = 0; i < NUM_FRUITS; i++)
+            if (tree.type == fruitTypes[i])
+            {
+                idx = i;
+                break;
+            }
+        if (idx < 0)
+            continue;
+
         int dMy = bfs_dist_lookup[s.myShack.y][s.myShack.x][tree.y][tree.x];
         int dEn = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][tree.y][tree.x];
         if (dMy <= 0 || dEn <= 0)
             continue;
 
-        float treeScore = 1.5;
+        float treeScore = 3;
         if (s.isNearWater(tree.x, tree.y))
-            treeScore *= 1.5;
+            treeScore *= 1.5f;
 
         if (s.turn > CHOPPING_TURN)
             treeScore *= mapRange(s.turn, CHOPPING_TURN, MAX_TURN, 1.0f, 0);
 
-        // Tree score only adds to myRes to encourage planting trees
-        myRes += treeScore / dMy;
-        enRes += treeScore / dEn;
+        float scoreMy = treeScore / dMy;
+        float scoreEn = treeScore / dEn;
+        if (scoreMy > bestMy[idx])
+            bestMy[idx] = scoreMy;
+        if (scoreEn > bestEn[idx])
+            bestEn[idx] = scoreEn;
+    }
+
+    for (int i = 0; i < NUM_FRUITS; i++)
+    {
+        myRes += bestMy[i];
+        enRes += bestEn[i];
+    }
+
+    // Enemy score reliability decays with simulation depth: we don't simulate
+    // opponent moves, so the further ahead we look, the less accurate enRes is.
+    int turnsElapsed = max(0, s.turn - g_rootTurn);
+
+    // We currently don't simulate opponent, so we assume its scaling is the same as its average
+    if (turnsElapsed > 0 && s.turn > 0)
+    {
+        enRes += (enGamePts / (float)s.turn) * (float)turnsElapsed;
     }
 
     constexpr float SCALE = 500.0f;
@@ -1462,164 +1500,254 @@ float heuristic(const State &s)
 // constexpr float UCT_C = 1.5;
 constexpr float UCT_C = 1.41421356f;
 
-int selectUnexpandedChild(Node *node)
+// Two macro actions conflict if they would race for the same spot/resource.
+// PICK/DROP at the shack are intentionally allowed to coexist.
+static bool isTargetedMacro(const Action &a)
 {
-    // Pick uniformly among the remaining NULL slots.
-    int pick = rand() % node->remainingUnexpandedChildren;
-
-    for (int i = 0; i < (int)node->children.size(); i++)
+    if (a.category != Action::MACRO)
+        return false;
+    switch (a.type)
     {
-        if (node->children[i] != nullptr)
-            continue;
-        if (pick == 0)
-            return i;
-        pick--;
+    case Action::MOVE_AND_HARVEST_ONCE:
+    case Action::MOVE_AND_CHOP:
+    case Action::MOVE_AND_PLANT:
+    case Action::MOVE_AND_MINE_ONCE:
+        return true;
+    default:
+        return false;
     }
-
-    return -1;
 }
 
-// Pick the next child index: a random unexpanded slot if the node isn't
-// fully expanded yet, otherwise the UCT-best child.
-int selectChild(Node *node)
+static bool conflictsWith(const Action &a, const Action &b)
 {
-    int bestIdx = 0;
-    float bestUct = -1e30f;
-    float logN = logf((float)node->visits);
-    for (int i = 0; i < (int)node->children.size(); i++)
+    if (!isTargetedMacro(a) || !isTargetedMacro(b))
+        return false;
+    return a.x == b.x && a.y == b.y;
+}
+
+// Lazily build per-troll action lists and bandit slots on first visit.
+void initializeNode(Node *node)
+{
+    if (node->initialized)
+        return;
+    node->state.generatePerTrollMacroActions(node->player, node->base,
+                                             node->perTrollActions, node->canTrain);
+
+    node->perTrollStats.resize(node->perTrollActions.size());
+    for (int i = 0; i < (int)node->perTrollActions.size(); i++)
+        node->perTrollStats[i].assign(node->perTrollActions[i].size(), {});
+
+    node->initialized = true;
+}
+
+// DUCT selection: independently pick an action per troll, masking out actions
+// whose target collides with what an earlier troll has already chosen this iter.
+// Untried (visits==0) actions are picked first (random); otherwise UCB1 over
+// the troll's bandit using the parent's total visit count as logN.
+// Returns false only if some troll has no admissible action (extremely rare —
+// happens only if every candidate conflicts with prior picks).
+static bool selectJointAction(Node *node, vector<int> &outIdx, uint64_t &outKey)
+{
+    int M = (int)node->perTrollActions.size();
+    outIdx.assign(M, -1);
+    outKey = 0;
+
+    float logN = node->visits > 0 ? logf((float)node->visits) : 0.0f;
+
+    vector<int> chosenSoFar;
+    chosenSoFar.reserve(M);
+
+    for (int t = 0; t < M; t++)
     {
-        Node *c = node->children[i];
+        const auto &actions = node->perTrollActions[t];
+        const auto &stats = node->perTrollStats[t];
+        int K = (int)actions.size();
 
-        float exploit = c->score / (float)c->visits;
-        float explore = UCT_C * sqrtf(logN / (float)c->visits);
-        float uct = exploit + explore;
-
-        if (uct > bestUct)
+        // Build admissible set: actions that don't conflict with any previously
+        // chosen troll's pick this iteration.
+        vector<int> admissible;
+        admissible.reserve(K);
+        for (int i = 0; i < K; i++)
         {
-            bestUct = uct;
-            bestIdx = i;
+            bool ok = true;
+            for (int prev : chosenSoFar)
+            {
+                int prevTroll = prev >> 16;
+                int prevIdx = prev & 0xFFFF;
+                if (conflictsWith(actions[i], node->perTrollActions[prevTroll][prevIdx]))
+                {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok)
+                admissible.push_back(i);
         }
+
+        // Fallback: if every candidate conflicts (rare), allow all so we still
+        // produce a joint action — let the heuristic absorb the wasted move.
+        if (admissible.empty())
+            for (int i = 0; i < K; i++)
+                admissible.push_back(i);
+
+        // Prefer untried actions first (random tiebreak).
+        vector<int> untried;
+        for (int i : admissible)
+            if (stats[i].visits == 0)
+                untried.push_back(i);
+
+        int pick;
+        if (!untried.empty())
+        {
+            pick = untried[rand() % untried.size()];
+        }
+        else
+        {
+            int best = admissible[0];
+            float bestUct = -1e30f;
+            for (int i : admissible)
+            {
+                float exploit = stats[i].score / (float)stats[i].visits;
+                float explore = UCT_C * sqrtf(logN / (float)stats[i].visits);
+                float uct = exploit + explore;
+                if (uct > bestUct)
+                {
+                    bestUct = uct;
+                    best = i;
+                }
+            }
+            pick = best;
+        }
+
+        outIdx[t] = pick;
+        chosenSoFar.push_back((t << 16) | pick);
+        outKey |= ((uint64_t)(pick & 0xFF)) << (t * 8);
     }
-    return bestIdx;
+    return true;
 }
 
-// Create a child node by applying the action at index `idx`. Decrements
-// the parent's unexpanded counter.
-Node *expand(Node *node, int idx)
+// Build the full ActionSet (per-troll picks + optional TRAIN) for application.
+static ActionSet jointToActionSet(Node *node, const vector<int> &idx)
 {
+    ActionSet set;
+    set.actions.reserve(node->perTrollActions.size() + (node->canTrain ? 1 : 0));
+    for (int t = 0; t < (int)idx.size(); t++)
+        set.actions.push_back(node->perTrollActions[t][idx[t]]);
+    if (node->canTrain)
+        set.actions.push_back(Action::train(node->player, 2, 2, 2, 2));
+    return set;
+}
+
+// Apply the joint action and return (or create) the corresponding child node.
+Node *expand(Node *node, const vector<int> &idx, uint64_t key)
+{
+    auto it = node->children.find(key);
+    if (it != node->children.end())
+        return it->second;
+
     Node *child = allocNode();
-
     child->state = node->state;
+    child->player = node->player;
 
-    // Apply on a local copy so the parent's stored ActionSet is preserved while
-    // applyMacroActions mutates per-action macroTaskFinished flags.
-    ActionSet applied = node->actionSets[idx];
-
-    // cerr << "[MCTS] Expanding child " << idx << " / " << node->actionSets.size() << " with ActionSet : " << applied.toString() << endl;
-
+    ActionSet applied = jointToActionSet(node, idx);
     child->state.applyMacroActions(applied);
 
-    // Carry still-unfinished macros over to the child — those trolls remain busy.
     for (const Action &a : applied.actions)
         if (!a.macroTaskFinished)
             child->base.actions.push_back(a);
 
-    node->children[idx] = child;
-    node->remainingUnexpandedChildren--;
-
+    node->children[key] = child;
     return child;
-}
-
-void finalizeExpansionOnFirstVisit(Node *node)
-{
-    // Generate action sets and fulfill children vector with NULLs to mark them as unexpanded.
-    node->actionSets = node->state.generatePlayerActionSets(0, node->base);
-    node->children.assign(node->actionSets.size(), nullptr);
-    node->remainingUnexpandedChildren = (int)node->actionSets.size();
 }
 
 float mcts(Node *node, int depth = 0)
 {
-    // cerr << "[MCTS] Visiting node at depth " << depth << " with " << node->visits << " visits and score " << node->score << endl;
-
     if (depth > 100)
     {
         cerr << "[MCTS] deep depth=" << depth << " nodes=" << nodeCount << endl;
         exit(0);
     }
 
-    // Leaf (visited once, no actions yet) -> generate actions and
-    // fill children with NULLs so we can track which slots remain.
-    if (node->actionSets.empty())
-        finalizeExpansionOnFirstVisit(node);
+    if (!node->initialized)
+        initializeNode(node);
 
-    int childId;
-    Node *childNode;
+    vector<int> idx;
+    uint64_t key;
+    selectJointAction(node, idx, key);
+
+    auto it = node->children.find(key);
+    bool isNewChild = (it == node->children.end());
+
+    Node *childNode = expand(node, idx, key);
     float childValue;
-    if (node->remainingUnexpandedChildren > 0)
-    {
-        childId = selectUnexpandedChild(node);
-        childNode = expand(node, childId);
-        childValue = heuristic(childNode->state);
 
+    if (isNewChild)
+    {
+        childValue = heuristic(childNode->state);
         childNode->visits++;
         childNode->score += childValue;
     }
     else
     {
-        childId = selectChild(node);
-        childNode = node->children[childId];
         childValue = mcts(childNode, depth + 1);
     }
 
+    // Per-troll bandit backprop.
+    for (int t = 0; t < (int)idx.size(); t++)
+    {
+        node->perTrollStats[t][idx[t]].visits++;
+        node->perTrollStats[t][idx[t]].score += childValue;
+    }
     node->visits++;
     node->score += childValue;
 
     return childValue;
 }
 
-int getMostVisitedChild(Node *node, int depth = 0)
+// For each troll, return the most-visited candidate action (with score tiebreak).
+static vector<int> getBestPerTrollIndices(Node *node, bool log = false)
 {
-    int bestIdx = -1;
-    int bestVisits = -1;
-    for (int i = 0; i < (int)node->children.size(); i++)
+    vector<int> best(node->perTrollActions.size(), 0);
+    for (int t = 0; t < (int)node->perTrollActions.size(); t++)
     {
-        Node *c = node->children[i];
-
-        if (depth == 0)
+        const auto &stats = node->perTrollStats[t];
+        int bestIdx = 0;
+        int bestVisits = -1;
+        float bestScore = -1e30f;
+        for (int i = 0; i < (int)stats.size(); i++)
         {
-            vector<Action> &actions = node->actionSets[i].actions;
-
-            cerr << "ActionSet " << i << " / " << node->children.size() << ": visits=" << (c->visits) << " quality=" << (c->score / c->visits) << " | Actions :";
-            for (const auto &a : actions)
-                cerr << " | " << a.toString();
-            cerr << endl;
+            float avg = stats[i].visits > 0 ? stats[i].score / stats[i].visits : -1e30f;
+            if (stats[i].visits > bestVisits ||
+                (stats[i].visits == bestVisits && avg > bestScore))
+            {
+                bestVisits = stats[i].visits;
+                bestScore = avg;
+                bestIdx = i;
+            }
         }
+        best[t] = bestIdx;
 
-        if (c->visits > bestVisits)
+        if (log)
         {
-            bestVisits = c->visits;
-            bestIdx = i;
+            cerr << "Troll " << t << " bandit:";
+            for (int i = 0; i < (int)stats.size(); i++)
+            {
+                float avg = stats[i].visits > 0 ? stats[i].score / stats[i].visits : 0.0f;
+                cerr << " | " << node->perTrollActions[t][i].toString()
+                     << " v=" << stats[i].visits << " q=" << avg << endl;
+            }
         }
     }
-    return bestIdx;
-}
-
-void displayGoldPath(Node *node, int depth = 0)
-{
-    int bestIdx = getMostVisitedChild(node, 999);
-    Node *childNode = node->children[bestIdx];
-    cerr << "Gold path step " << depth << " | Actions: " << node->actionSets[bestIdx].toString() << " | Visits=" << childNode->visits << " score=" << childNode->score << endl;
-
-    if (childNode->visits > 1)
-        displayGoldPath(childNode, 999);
+    return best;
 }
 
 vector<Action> runMCTS(const State &rootState)
 {
+    g_rootTurn = rootState.turn;
     resetNodePool();
     Node *root = allocNode();
     root->state = rootState;
+    root->player = 0;
 
     auto start = chrono::steady_clock::now();
     int iters = 0;
@@ -1638,10 +1766,61 @@ vector<Action> runMCTS(const State &rootState)
     }
 
     cerr << "[MCTS] iters=" << iters << " nodes=" << nodeCount << endl;
-    // displayGoldPath(root);
 
-    int bestIdx = getMostVisitedChild(root);
-    return root->actionSets[bestIdx].actions;
+    if (!root->initialized)
+        initializeNode(root);
+
+    vector<int> bestIdx = getBestPerTrollIndices(root, true);
+
+    // Resolve final per-troll picks against each other to avoid a conflicting
+    // joint output: if troll t's choice collides with an earlier troll's, fall
+    // back to its next-best non-conflicting candidate.
+    for (int t = 1; t < (int)bestIdx.size(); t++)
+    {
+        const Action &a = root->perTrollActions[t][bestIdx[t]];
+        bool conflict = false;
+        for (int p = 0; p < t; p++)
+            if (conflictsWith(a, root->perTrollActions[p][bestIdx[p]]))
+            {
+                conflict = true;
+                break;
+            }
+        if (!conflict)
+            continue;
+
+        const auto &stats = root->perTrollStats[t];
+        int alt = -1;
+        int altVisits = -1;
+        float altScore = -1e30f;
+        for (int i = 0; i < (int)stats.size(); i++)
+        {
+            if (i == bestIdx[t])
+                continue;
+            const Action &cand = root->perTrollActions[t][i];
+            bool bad = false;
+            for (int p = 0; p < t; p++)
+                if (conflictsWith(cand, root->perTrollActions[p][bestIdx[p]]))
+                {
+                    bad = true;
+                    break;
+                }
+            if (bad)
+                continue;
+            float avg = stats[i].visits > 0 ? stats[i].score / stats[i].visits : -1e30f;
+            if (stats[i].visits > altVisits ||
+                (stats[i].visits == altVisits && avg > altScore))
+            {
+                altVisits = stats[i].visits;
+                altScore = avg;
+                alt = i;
+            }
+        }
+        if (alt >= 0)
+            bestIdx[t] = alt;
+    }
+
+    ActionSet best = jointToActionSet(root, bestIdx);
+    return best.actions;
 }
 
 // =====================================================
