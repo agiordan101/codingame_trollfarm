@@ -551,14 +551,21 @@ private:
             }
         }
 
-        // MOVE_AND_CHOP: every reachable tree
+        // MOVE_AND_CHOP: N closest trees to shack, where N = troll count
         if (turn > 200 && t.chopPower > 0)
         {
-            for (const auto &tr : trees)
+            int N = (int)allies.size();
+            vector<pair<int, int>> byDist; // (dist from shack, tree index)
+            for (int i = 0; i < (int)trees.size(); i++)
             {
-                int d = bfs_dist_lookup[t.y][t.x][tr.y][tr.x];
-                if (d < 0)
-                    continue;
+                int d = bfs_dist_lookup[shack.y][shack.x][trees[i].y][trees[i].x];
+                if (d >= 0)
+                    byDist.push_back({d, i});
+            }
+            sort(byDist.begin(), byDist.end());
+            for (int k = 0; k < min(N, (int)byDist.size()); k++)
+            {
+                const Tree &tr = trees[byDist[k].second];
                 actions.push_back(Action::moveAndChop(t.id, t.player, tr.x, tr.y));
             }
         }
@@ -813,7 +820,7 @@ public:
         {
             Action &a = set.actions[i];
 
-            // Teleport trolls 
+            // Teleport trolls
             Troll *t = findTrollById(a.trollid);
             if (t)
             {
@@ -1219,7 +1226,8 @@ Action Action::moveToward(const State &s, const Troll &t, int targetX, int targe
 {
     const vector<Troll> &allies = (t.player == 0) ? s.trolls : s.enemyTrolls;
 
-    auto cellOccupied = [&](int cx, int cy) {
+    auto cellOccupied = [&](int cx, int cy)
+    {
         for (const Troll &ally : allies)
             if (ally.id != t.id && ally.x == cx && ally.y == cy)
                 return true;
@@ -1407,6 +1415,22 @@ float heuristic(const State &s)
 
         int ressourceValue = 0.5f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 2 * t.carryWood;
         enRes += ressourceValue;
+    }
+
+    // Encourage balanced gathering of plum/lemon/apple/iron toward next troll training.
+    // Cost = (trollCount + 4) of each. Bonus scales linearly up to 25 when fully ready.
+    if (s.turn < MAX_TURN - CHOPPING_TURN)
+    {
+        float myTrainCost = (float)((int)s.trolls.size() + 4);
+        float enTrainCost = (float)((int)s.enemyTrolls.size() + 4);
+        float myTrainReady = min(1.0f, min({(float)s.myShack.plum, (float)s.myShack.lemon,
+                                            (float)s.myShack.apple, (float)s.myShack.iron}) /
+                                           myTrainCost);
+        float enTrainReady = min(1.0f, min({(float)s.enemyShack.plum, (float)s.enemyShack.lemon,
+                                            (float)s.enemyShack.apple, (float)s.enemyShack.iron}) /
+                                           enTrainCost);
+        myRes += 25.0f * myTrainReady;
+        enRes += 25.0f * enTrainReady;
     }
 
     // Score trees in [0,0.5] based on position relative to both shacks.
