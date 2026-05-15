@@ -1441,10 +1441,10 @@ float mcts(Node *node, int depth = 0)
         childId = selectChild(node);
         childNode = node->children[childId];
         childValue = mcts(childNode, depth + 1);
-
-        node->visits++;
-        node->score += childValue;
     }
+
+    node->visits++;
+    node->score += childValue;
 
     return childValue;
 }
@@ -1504,15 +1504,12 @@ vector<Action> runMCTS(const State &rootState)
         if (nodeCount >= MAX_NODES - 64)
             break;
 
-        float childValue = mcts(root);
-
-        root->visits++;
-        root->score += childValue;
+        mcts(root);
         iters++;
     }
 
     cerr << "[MCTS] iters=" << iters << " nodes=" << nodeCount << endl;
-    displayGoldPath(root);
+    // displayGoldPath(root);
 
     int bestIdx = getMostVisitedChild(root);
     return root->actionSets[bestIdx].actions;
@@ -1636,6 +1633,7 @@ int main()
 
     State prevState;
 
+    int turn = 0;
     while (true)
     {
         prevState = state;
@@ -1643,9 +1641,11 @@ int main()
         parseResources(state);
         parseTrees(state);
         parseTrolls(state);
+        state.turn = turn;
 
         vector<Action> actions = runMCTS(state);
 
         displayActions(actions, state);
+        turn++;
     }
 }
