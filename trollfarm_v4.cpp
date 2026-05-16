@@ -11,7 +11,7 @@
 #include <unordered_map>
 
 /*
-    Create harvest until the end macro move
+    Create chop until the end macro move
     Facteur d 'agressivité en fonction de la distance avec le shack adverse
 
     Game plan :
@@ -1386,7 +1386,10 @@ float mapRange(float value, float inputMin, float inputMax, float outputMin, flo
 // evaluation when ready (tree counts, troll positioning, carried fruit, etc.).
 float heuristic(const State &s)
 {
-    constexpr int CHOPPING_TURN = 150;
+    constexpr int TRAIN_PHASE_START_DECAY = 150;
+    constexpr int TRAIN_PHASE_END = 200;
+    constexpr int CHOPPING_PHASE_START = 200;
+    constexpr int TREE_PHASE_START_DECAY = 200;
     constexpr int MAX_TURN = 300;
 
     float myGamePts = s.myShack.plum + s.myShack.lemon + s.myShack.apple +
@@ -1398,12 +1401,17 @@ float heuristic(const State &s)
     float myRes = myGamePts;
     float enRes = enGamePts;
 
+    float chopPhase = 0;
+    if (s.turn >= CHOPPING_PHASE_START)
+        chopPhase = mapRange(s.turn, CHOPPING_PHASE_START, MAX_TURN, 0.0f, 1.0f);
+
     for (const auto &t : s.trolls)
     {
         // Having a troll is always good
         myRes += 50;
 
-        int ressourceValue = 0.25f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 1 * t.carryWood;
+        float ressourceValue = 0.25f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) +
+                               (1.0f + 2.0f * chopPhase) * t.carryWood;
         myRes += ressourceValue;
     }
     for (const auto &t : s.enemyTrolls)
@@ -1411,13 +1419,14 @@ float heuristic(const State &s)
         // Having a troll is always good
         enRes += 50;
 
-        int ressourceValue = 0.25f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) + 1 * t.carryWood;
+        float ressourceValue = 0.25f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) +
+                               (1.0f + 2.0f * chopPhase) * t.carryWood;
         enRes += ressourceValue;
     }
 
     // Encourage balanced gathering of plum/lemon/apple/iron toward next troll training.
     // Cost = (trollCount + 4) of each. Bonus scales linearly up to 25 when fully ready.
-    if (s.turn < MAX_TURN - CHOPPING_TURN)
+    if (s.turn < TRAIN_PHASE_END)
     {
         int statNumber = 2;
         int myTrollCount = (int)s.trolls.size();
@@ -1432,8 +1441,13 @@ float heuristic(const State &s)
         float enTrainReady = (min((float)s.enemyShack.plum, enRessourceCost) + min((float)s.enemyShack.lemon, enRessourceCost) +
                               min((float)s.enemyShack.apple, enRessourceCost) + min((float)s.enemyShack.iron, enRessourceCost)) /
                              (4.0f * enRessourceCost);
-        myRes += 40.0f * myTrainReady;
-        enRes += 40.0f * enTrainReady;
+
+        float trainPhaseWeight = 1;
+        if (TRAIN_PHASE_START_DECAY < s.turn && s.turn < TRAIN_PHASE_END)
+            trainPhaseWeight = mapRange(s.turn, TRAIN_PHASE_START_DECAY, TRAIN_PHASE_END, 1.0f, 0.0f);
+
+        myRes += 40.0f * myTrainReady * trainPhaseWeight;
+        enRes += 40.0f * enTrainReady * trainPhaseWeight;
     }
 
     // Each type of fruit produce a bonus if at least one tree is 3-cells near the shack
@@ -1460,14 +1474,18 @@ float heuristic(const State &s)
         if (dMy <= 0 || dEn <= 0)
             continue;
 
-        float treeScore = 5.0f * mapRange(s.turn, CHOPPING_TURN, MAX_TURN, 1.0f, 0.0f);
+        float treeScore = 40;
         if (s.isNearWater(tree.x, tree.y))
             treeScore *= 1.5f;
 
-        if (dMy <= 3)
-            bestMy[idx] = treeScore;
-        if (dEn <= 3)
-            bestEn[idx] = treeScore;
+        float treePhaseWeight = 1;
+        if (TRAIN_PHASE_START_DECAY < s.turn && s.turn < TRAIN_PHASE_END)
+            treePhaseWeight = mapRange(s.turn, TRAIN_PHASE_START_DECAY, TRAIN_PHASE_END, 1.0f, 0.0f);
+
+        if (treeScore / (float)dMy > bestMy[idx])
+            bestMy[idx] = treePhaseWeight * treeScore / (float)dMy;
+        if (treeScore / (float)dEn > bestEn[idx])
+            bestEn[idx] = treePhaseWeight * treeScore / (float)dEn;
     }
 
     for (int i = 0; i < NUM_FRUITS; i++)
@@ -1478,8 +1496,8 @@ float heuristic(const State &s)
 
     // Enemy score reliability decays with simulation depth: we don't simulate
     // opponent moves, so the further ahead we look, the less accurate enRes is.
-    int turnsElapsed = max(0, s.turn - g_rootTurn);
-    enRes += turnsElapsed * 0.1;
+    // int turnsElapsed = max(0, s.turn - g_rootTurn);
+    // enRes += turnsElapsed * 0.1;
 
     constexpr float SCALE = 500.0f;
     return max(-1.0f, min(1.0f, (myRes - enRes) / SCALE));

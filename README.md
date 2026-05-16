@@ -11,7 +11,7 @@ Really bad. Not enoug iterations and long term vision
 ## v2.1 - Chop warrior & Chop scaler with real pathfinding
 
 League: Bronze (max)
-<!-- Last moment in arena: 100/477 -->
+Last moment in arena: 90/1016
 First moment in arena: 40/700
 
 ## v2 - Chop warrior & Chop scaler
