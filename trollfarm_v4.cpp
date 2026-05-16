@@ -11,7 +11,8 @@
 #include <unordered_map>
 
 /*
-    3
+    Create harvest until the end macro move
+    Facteur d 'agressivité en fonction de la distance avec le shack adverse
 
     Game plan :
         - Create static BFS lookup table at first turn. Ouput move based on troll speed and BFS distance to target.
@@ -538,7 +539,7 @@ private:
                 {
                     if (tr.type != ft || tr.fruits <= 0)
                         continue;
-                    int d = bfs_dist_lookup[t.y][t.x][tr.y][tr.x];
+                    int d = bfs_dist_lookup[shack.y][shack.x][tr.y][tr.x];
                     if (d < 0)
                         continue;
                     if (bestDist == -1 || d < bestDist)
@@ -555,7 +556,7 @@ private:
         // MOVE_AND_CHOP: N closest trees to shack, where N = troll count
         if (turn > 200 && t.chopPower > 0 && t.canCarry())
         {
-            int N = (int)allies.size();
+            int N = (int)allies.size() * 2;
             vector<pair<int, int>> byDist; // (dist from shack, tree index)
             for (int i = 0; i < (int)trees.size(); i++)
             {
@@ -582,7 +583,7 @@ private:
                     if (!isCellWalkable(grid[y][x]))
                         continue;
                     int dShack = bfs_dist_lookup[shack.y][shack.x][y][x];
-                    if (dShack != 1)
+                    if (dShack > 2 || dShack < 0)
                         continue;
 
                     if (findTreeIndex(x, y) >= 0)
@@ -1418,7 +1419,7 @@ float heuristic(const State &s)
     // Cost = (trollCount + 4) of each. Bonus scales linearly up to 25 when fully ready.
     if (s.turn < MAX_TURN - CHOPPING_TURN)
     {
-        int statNumber = 4;
+        int statNumber = 2;
         int myTrollCount = (int)s.trolls.size();
         int enTrollCount = (int)s.enemyTrolls.size();
 
@@ -1431,14 +1432,11 @@ float heuristic(const State &s)
         float enTrainReady = (min((float)s.enemyShack.plum, enRessourceCost) + min((float)s.enemyShack.lemon, enRessourceCost) +
                               min((float)s.enemyShack.apple, enRessourceCost) + min((float)s.enemyShack.iron, enRessourceCost)) /
                              (4.0f * enRessourceCost);
-        myRes += 10.0f * myTrainReady;
-        enRes += 10.0f * enTrainReady;
+        myRes += 40.0f * myTrainReady;
+        enRes += 40.0f * enTrainReady;
     }
 
-    // Score trees by type, keeping only the BEST per-type contribution for each
-    // player. Rationale: having three close PLUMs isn't 3x as valuable as one —
-    // a troll only needs one good source per fruit type. Encourages spreading
-    // plant choices across all types instead of clustering.
+    // Each type of fruit produce a bonus if at least one tree is 3-cells near the shack
     // Banana is ignored because it's not used for training. It should be chopped for wood
     constexpr int NUM_FRUITS = 3;
     const string fruitTypes[NUM_FRUITS] = {"PLUM", "LEMON", "APPLE"};
@@ -1462,19 +1460,14 @@ float heuristic(const State &s)
         if (dMy <= 0 || dEn <= 0)
             continue;
 
-        float treeScore = 3;
+        float treeScore = 5.0f * mapRange(s.turn, CHOPPING_TURN, MAX_TURN, 1.0f, 0.0f);
         if (s.isNearWater(tree.x, tree.y))
             treeScore *= 1.5f;
 
-        if (s.turn > CHOPPING_TURN)
-            treeScore *= mapRange(s.turn, CHOPPING_TURN, MAX_TURN, 1.0f, 0);
-
-        float scoreMy = treeScore / dMy;
-        float scoreEn = treeScore / dEn;
-        if (scoreMy > bestMy[idx])
-            bestMy[idx] = scoreMy;
-        if (scoreEn > bestEn[idx])
-            bestEn[idx] = scoreEn;
+        if (dMy <= 3)
+            bestMy[idx] = treeScore;
+        if (dEn <= 3)
+            bestEn[idx] = treeScore;
     }
 
     for (int i = 0; i < NUM_FRUITS; i++)
@@ -1486,12 +1479,7 @@ float heuristic(const State &s)
     // Enemy score reliability decays with simulation depth: we don't simulate
     // opponent moves, so the further ahead we look, the less accurate enRes is.
     int turnsElapsed = max(0, s.turn - g_rootTurn);
-
-    // We currently don't simulate opponent, so we assume its scaling is the same as its average
-    if (turnsElapsed > 0 && s.turn > 0)
-    {
-        enRes += (enGamePts / (float)s.turn) * (float)turnsElapsed;
-    }
+    enRes += turnsElapsed * 0.1;
 
     constexpr float SCALE = 500.0f;
     return max(-1.0f, min(1.0f, (myRes - enRes) / SCALE));
