@@ -235,6 +235,15 @@ constexpr int MAX_MAP_WIDTH = 2 * MAX_MAP_HEIGHT;
 
 int bfs_dist_lookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH][MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
 
+// For each (from, to), a bitmask of cardinal directions that step onto a
+// cell exactly 1 closer (BFS-wise) to `to`. Direction encoding matches the
+// dxs/dys arrays below: bit 0=+x, 1=-x, 2=+y, 3=-y.
+// Lets moveToward walk greedily in O(movementSpeed) instead of scanning the
+// whole grid.
+static constexpr int STEP_DXS[4] = {1, -1, 0, 0};
+static constexpr int STEP_DYS[4] = {0, 0, 1, -1};
+uint8_t nextStepMask[MAX_MAP_HEIGHT][MAX_MAP_WIDTH][MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+
 static vector<Position> ironMines;
 static bool nearWaterLookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
 
@@ -314,6 +323,29 @@ void buildBfsLookup(int w, int h, const char g[][MAX_MAP_WIDTH])
             }
         }
     }
+
+    // Derive nextStepMask from the completed BFS table.
+    for (int sy = 0; sy < h; sy++)
+        for (int sx = 0; sx < w; sx++)
+            for (int ty = 0; ty < h; ty++)
+                for (int tx = 0; tx < w; tx++)
+                {
+                    uint8_t mask = 0;
+                    int d = bfs_dist_lookup[sy][sx][ty][tx];
+                    if (d > 0)
+                    {
+                        for (int k = 0; k < 4; k++)
+                        {
+                            int nx = sx + STEP_DXS[k];
+                            int ny = sy + STEP_DYS[k];
+                            if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                                continue;
+                            if (bfs_dist_lookup[ny][nx][ty][tx] == d - 1)
+                                mask |= (uint8_t)(1 << k);
+                        }
+                    }
+                    nextStepMask[sy][sx][ty][tx] = mask;
+                }
 }
 
 void displayBfsDistsFrom(int h, int w, int sx, int sy)
@@ -1359,29 +1391,33 @@ Action Action::moveToward(const State &s, const Troll &t, int targetX, int targe
         return false;
     };
 
-    int bestX = t.x, bestY = t.y;
-    int bestDist = bfs_dist_lookup[t.y][t.x][targetY][targetX];
-
-    for (int cy = 0; cy < s.h; cy++)
-        for (int cx = 0; cx < s.w; cx++)
+    int x = t.x, y = t.y;
+    for (int step = 0; step < t.movementSpeed; step++)
+    {
+        if (x == targetX && y == targetY)
+            break;
+        uint8_t mask = nextStepMask[y][x][targetY][targetX];
+        if (mask == 0)
+            break;
+        int chosen = -1;
+        for (int k = 0; k < 4; k++)
         {
-            int stepDist = bfs_dist_lookup[t.y][t.x][cy][cx];
-            if (stepDist < 1 || stepDist > t.movementSpeed)
+            if (!(mask & (1u << k)))
                 continue;
-            int remDist = bfs_dist_lookup[cy][cx][targetY][targetX];
-            if (remDist < 0)
+            int nx = x + STEP_DXS[k];
+            int ny = y + STEP_DYS[k];
+            if (cellOccupied(nx, ny))
                 continue;
-            if (cellOccupied(cx, cy))
-                continue;
-            if (bestDist < 0 || remDist < bestDist)
-            {
-                bestDist = remDist;
-                bestX = cx;
-                bestY = cy;
-            }
+            chosen = k;
+            break;
         }
+        if (chosen < 0)
+            break;
+        x += STEP_DXS[chosen];
+        y += STEP_DYS[chosen];
+    }
 
-    return Action::move(trollid, playerid, bestX, bestY);
+    return Action::move(trollid, playerid, x, y);
 }
 
 Action Action::findNextPrimitiveAction(const State &s)
