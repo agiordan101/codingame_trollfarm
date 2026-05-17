@@ -71,12 +71,16 @@
 
         Fix: Closed-form for the common case (no growth interleave because cooldown > chopTurns): chopTurns = ceil(health / chopPower). Only fall back to the loop simulation when cooldown might tick to 0 during chopping.
 
-        9. state copy on every node expand
-        trollfarm_v4.cpp:1444
-
-        child->state = node->state copies all trees + trolls + grid (the grid is 11×22 chars = 242 bytes, negligible, but trees vector copy + trolls reallocate).
-
-        Fix: Use small-vector / inline storage for trees and trolls, or pool the inner allocations.
+        1. Create a fruit neum instead of manipulating and dynamically allocating strings :
+                    
+        enum FruitType : uint8_t
+        {
+            FRUIT_NONE = 0,
+            FRUIT_PLUM = 1,
+            FRUIT_LEMON = 2,
+            FRUIT_APPLE = 3,
+            FRUIT_BANANA = 4,
+        };
 */
 
 using namespace std;
@@ -640,6 +644,7 @@ public:
 
 constexpr int MAX_TROLL_ID = 11;
 constexpr int MAX_TROLLS_TOTAL = 12;
+constexpr int MAX_TREES_TOTAL = 64;
 
 class State
 {
@@ -669,7 +674,7 @@ public:
 
     State()
     {
-        allTrolls.reserve(MAX_TROLLS_TOTAL);
+        reserveBuffers();
         for (int y = 0; y < MAX_MAP_HEIGHT; y++)
             for (int x = 0; x < MAX_MAP_WIDTH; x++)
                 treeAtCell[y][x] = -1;
@@ -689,11 +694,25 @@ public:
         enemyShack = o.enemyShack;
         trees = o.trees;
         allTrolls = o.allTrolls;
-        if (allTrolls.capacity() < MAX_TROLLS_TOTAL)
-            allTrolls.reserve(MAX_TROLLS_TOTAL);
         memcpy(treeAtCell, o.treeAtCell, sizeof(treeAtCell));
+        // Vector copy assignment may shrink-fit capacity on some stdlibs; restore
+        // it so future pushes (applyPlant, applyTrain) don't reallocate and
+        // invalidate the Troll* pointers held by trolls/enemyTrolls.
+        reserveBuffers();
         rebuildTrollPointers();
         return *this;
+    }
+
+    void reserveBuffers()
+    {
+        if (allTrolls.capacity() < MAX_TROLLS_TOTAL)
+            allTrolls.reserve(MAX_TROLLS_TOTAL);
+        if (trees.capacity() < MAX_TREES_TOTAL)
+            trees.reserve(MAX_TREES_TOTAL);
+        if (trolls.capacity() < MAX_TROLLS_TOTAL)
+            trolls.reserve(MAX_TROLLS_TOTAL);
+        if (enemyTrolls.capacity() < MAX_TROLLS_TOTAL)
+            enemyTrolls.reserve(MAX_TROLLS_TOTAL);
     }
 
     void rebuildTreeIndex()
