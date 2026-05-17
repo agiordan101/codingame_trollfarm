@@ -9,6 +9,7 @@
 #include <chrono>
 #include <variant>
 #include <unordered_map>
+#include <cstring>
 
 /*
     Macro MCTS algorithms :
@@ -482,6 +483,9 @@ public:
 // STATE
 // =====================================================
 
+constexpr int MAX_TROLL_ID = 11;
+constexpr int MAX_TROLLS_TOTAL = 12;
+
 class State
 {
 public:
@@ -491,11 +495,58 @@ public:
     Shack myShack;
     Shack enemyShack;
     vector<Tree> trees;
-    vector<Troll> trolls;
-    vector<Troll> enemyTrolls;
+
+    // Single owning storage for all trolls. `trolls` / `enemyTrolls` hold
+    // non-owning pointers into `allTrolls` for fast per-player iteration.
+    // Invariants:
+    //   - troll.id == its index in allTrolls (parsing pushes in id order;
+    //     applyTrain assigns nextId = allTrolls.size()).
+    //   - pointers in trolls/enemyTrolls stay valid as long as allTrolls
+    //     doesn't reallocate. We reserve MAX_TROLLS_TOTAL up-front to ensure that.
+    vector<Troll> allTrolls;
+    vector<Troll *> trolls;
+    vector<Troll *> enemyTrolls;
+
+    State()
+    {
+        allTrolls.reserve(MAX_TROLLS_TOTAL);
+    }
+
+    State(const State &o) { *this = o; }
+
+    State &operator=(const State &o)
+    {
+        if (this == &o)
+            return *this;
+        turn = o.turn;
+        w = o.w;
+        h = o.h;
+        memcpy(grid, o.grid, sizeof(grid));
+        myShack = o.myShack;
+        enemyShack = o.enemyShack;
+        trees = o.trees;
+        allTrolls = o.allTrolls;
+        if (allTrolls.capacity() < MAX_TROLLS_TOTAL)
+            allTrolls.reserve(MAX_TROLLS_TOTAL);
+        rebuildTrollPointers();
+        return *this;
+    }
+
+    void rebuildTrollPointers()
+    {
+        trolls.clear();
+        enemyTrolls.clear();
+        for (Troll &t : allTrolls)
+        {
+            if (t.player == 0)
+                trolls.push_back(&t);
+            else
+                enemyTrolls.push_back(&t);
+        }
+    }
 
 private:
-    vector<Action> generateTrollMacroActions(const Troll &t, const Shack &shack, const vector<Troll> &allies) const
+    vector<Action> generateTrollMacroActions(const Troll &t, const Shack &shack, const vector<Troll *> &allies) const
     {
         vector<Action> actions;
 
@@ -668,14 +719,15 @@ public:
                                       vector<vector<Action>> &outPerTroll,
                                       bool &outCanTrain) const
     {
-        const vector<Troll> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
+        const vector<Troll *> &playerTrolls = (player == 0) ? trolls : enemyTrolls;
         const Shack &shack = (player == 0) ? myShack : enemyShack;
 
         outPerTroll.clear();
         outPerTroll.reserve(playerTrolls.size());
 
-        for (const Troll &t : playerTrolls)
+        for (const Troll *tp : playerTrolls)
         {
+            const Troll &t = *tp;
             const Action *kept = nullptr;
             for (const Action &a : base.actions)
             {
@@ -760,7 +812,7 @@ public:
             }
             if (a.category != Action::PRIMITIVE)
             {
-                Troll *tr = findTrollById(a.trollid);
+                Troll *tr = getTrollById(a.trollid);
                 if (tr && !(tr->x == a.x && tr->y == a.y))
                 {
                     int d = bfs_dist_lookup[tr->y][tr->x][a.y][a.x];
@@ -826,7 +878,7 @@ public:
                 {
                     // Arrival turn: teleport, emit terminal. Non-chop macros
                     // finish here; MOVE_AND_CHOP defers to tree-death check.
-                    Troll *tr = findTrollById(a.trollid);
+                    Troll *tr = getTrollById(a.trollid);
                     if (tr)
                     {
                         tr->x = a.x;
@@ -867,7 +919,7 @@ public:
             Action &a = set.actions[i];
             if (a.macroTaskFinished)
                 continue;
-            Troll *tr = findTrollById(a.trollid);
+            Troll *tr = getTrollById(a.trollid);
             if (tr && !(tr->x == a.x && tr->y == a.y))
             {
                 tr->x = a.x;
@@ -935,18 +987,10 @@ public:
         return false;
     }
 
-private:
-    Troll *findTrollById(int id)
-    {
-        for (auto &t : trolls)
-            if (t.id == id)
-                return &t;
-        for (auto &t : enemyTrolls)
-            if (t.id == id)
-                return &t;
-        return nullptr;
-    }
+    Troll *getTrollById(int id) { return &allTrolls[id]; }
+    const Troll *getTrollById(int id) const { return &allTrolls[id]; }
 
+private:
     int findTreeIndex(int x, int y) const
     {
         for (int i = 0; i < (int)trees.size(); i++)
@@ -957,13 +1001,13 @@ private:
 
     void applyMove(const Action &a)
     {
-        Troll *t = findTrollById(a.trollid);
+        Troll *t = getTrollById(a.trollid);
         if (!t)
             return;
 
-        const vector<Troll> &allies = (t->player == 0) ? trolls : enemyTrolls;
-        for (const Troll &ally : allies)
-            if (ally.id != t->id && ally.x == a.x && ally.y == a.y)
+        const vector<Troll *> &allies = (t->player == 0) ? trolls : enemyTrolls;
+        for (const Troll *ally : allies)
+            if (ally->id != t->id && ally->x == a.x && ally->y == a.y)
                 return;
 
         t->x = a.x;
@@ -972,7 +1016,7 @@ private:
 
     void applyPlant(const Action &a)
     {
-        Troll *t = findTrollById(a.trollid);
+        Troll *t = getTrollById(a.trollid);
         if (!t)
             return;
         int *fruit = t->fruitField(a.resource);
@@ -994,7 +1038,7 @@ private:
 
     void applyPick(const Action &a)
     {
-        Troll *t = findTrollById(a.trollid);
+        Troll *t = getTrollById(a.trollid);
         if (!t || !t->canCarry())
             return;
         Shack &shack = (t->player == 0) ? myShack : enemyShack;
@@ -1008,7 +1052,7 @@ private:
 
     void applyDrop(const Action &a)
     {
-        Troll *t = findTrollById(a.trollid);
+        Troll *t = getTrollById(a.trollid);
         if (!t)
             return;
         Shack &shack = (t->player == 0) ? myShack : enemyShack;
@@ -1028,7 +1072,7 @@ private:
 
     void applyMine(const Action &a)
     {
-        Troll *t = findTrollById(a.trollid);
+        Troll *t = getTrollById(a.trollid);
         if (!t)
             return;
         int amount = min(t->chopPower, t->remainingCarry());
@@ -1040,7 +1084,7 @@ private:
     {
         // Should check if shack has enough resources because a troll can PICK items from the shack in the same turn
         int player = a.playerid;
-        vector<Troll> &teamTrolls = (player == 0) ? trolls : enemyTrolls;
+        const vector<Troll *> &teamTrolls = (player == 0) ? trolls : enemyTrolls;
         Shack &shack = (player == 0) ? myShack : enemyShack;
 
         int n = (int)teamTrolls.size();
@@ -1059,11 +1103,17 @@ private:
         shack.iron -= costIron;
 
         int nextId = 0;
-        for (const auto &t : trolls)
-            nextId = max(nextId, t.id);
-        for (const auto &t : enemyTrolls)
-            nextId = max(nextId, t.id);
+        for (const Troll *t : trolls)
+            nextId = max(nextId, t->id);
+        for (const Troll *t : enemyTrolls)
+            nextId = max(nextId, t->id);
         nextId++;
+
+        if ((int)allTrolls.size() >= MAX_TROLLS_TOTAL)
+        {
+            cerr << "allTrolls capacity exceeded — increase MAX_TROLLS_TOTAL" << endl;
+            return;
+        }
 
         Troll nt;
         nt.id = nextId;
@@ -1076,7 +1126,8 @@ private:
         nt.chopPower = a.chopPower;
         nt.carryPlum = nt.carryLemon = nt.carryApple = 0;
         nt.carryBanana = nt.carryIron = nt.carryWood = 0;
-        teamTrolls.push_back(move(nt));
+        allTrolls.push_back(move(nt));
+        rebuildTrollPointers();
     }
 
     void applyHarvest(const vector<Action> &actions)
@@ -1087,7 +1138,7 @@ private:
         {
             if (a.type != Action::HARVEST)
                 continue;
-            Troll *t = findTrollById(a.trollid);
+            Troll *t = getTrollById(a.trollid);
             if (!t)
                 continue;
             int idx = findTreeIndex(t->x, t->y);
@@ -1105,7 +1156,7 @@ private:
             // Each troll may harvest up to harvestPower fruits this turn
             vector<int> budgets;
             for (int id : trollIds)
-                budgets.push_back(findTrollById(id)->harvestPower);
+                budgets.push_back(getTrollById(id)->harvestPower);
 
             // Distribute one fruit per active troll per round until exhausted
             while (tree.fruits > 0)
@@ -1114,7 +1165,7 @@ private:
                 vector<int> active;
                 for (int i = 0; i < (int)trollIds.size(); i++)
                 {
-                    Troll *t = findTrollById(trollIds[i]);
+                    Troll *t = getTrollById(trollIds[i]);
                     if (budgets[i] > 0 && t->canCarry())
                         active.push_back(i);
                 }
@@ -1126,7 +1177,7 @@ private:
                 {
                     for (int i : active)
                     {
-                        Troll *t = findTrollById(trollIds[i]);
+                        Troll *t = getTrollById(trollIds[i]);
                         int *f = t->fruitField(tree.type);
                         if (f)
                             (*f)++;
@@ -1139,7 +1190,7 @@ private:
                     // Normal round: each active troll grabs one fruit
                     for (int i : active)
                     {
-                        Troll *t = findTrollById(trollIds[i]);
+                        Troll *t = getTrollById(trollIds[i]);
                         int *f = t->fruitField(tree.type);
                         if (f)
                             (*f)++;
@@ -1159,7 +1210,7 @@ private:
         {
             if (a.type != Action::CHOP)
                 continue;
-            Troll *t = findTrollById(a.trollid);
+            Troll *t = getTrollById(a.trollid);
             if (!t)
                 continue;
             int idx = findTreeIndex(t->x, t->y);
@@ -1178,7 +1229,7 @@ private:
             // All choppers hit simultaneously: sum their chopPower into the tree
             int totalDmg = 0;
             for (int id : trollIds)
-                totalDmg += findTrollById(id)->chopPower;
+                totalDmg += getTrollById(id)->chopPower;
             tree.health -= totalDmg;
 
             // Tree survives this turn -> no wood drop
@@ -1193,7 +1244,7 @@ private:
             // Each chopper can collect up to its remaining carry capacity
             vector<int> budgets;
             for (int id : trollIds)
-                budgets.push_back(findTrollById(id)->remainingCarry());
+                budgets.push_back(getTrollById(id)->remainingCarry());
 
             // Distribute one wood per active troll per round until exhausted
             while (wood > 0)
@@ -1211,7 +1262,7 @@ private:
                 {
                     for (int i : active)
                     {
-                        findTrollById(trollIds[i])->carryWood++;
+                        getTrollById(trollIds[i])->carryWood++;
                         budgets[i]--;
                     }
                     wood = 0;
@@ -1221,7 +1272,7 @@ private:
                     // Normal round: each active troll grabs one wood
                     for (int i : active)
                     {
-                        findTrollById(trollIds[i])->carryWood++;
+                        getTrollById(trollIds[i])->carryWood++;
                         budgets[i]--;
                     }
                     wood -= (int)active.size();
@@ -1248,10 +1299,7 @@ private:
 
 const Troll *Action::findTrollInState(const State &s) const
 {
-    for (const Troll &t : s.trolls)
-        if (t.id == trollid)
-            return &t;
-    return nullptr;
+    return s.getTrollById(trollid);
 }
 
 // Returns Action::move toward (targetX, targetY) picking the reachable cell
@@ -1262,12 +1310,12 @@ const Troll *Action::findTrollInState(const State &s) const
 // MAX_MACRO_TURNS in findNextPrimitiveAction, so MCTS sees the bad outcome.
 Action Action::moveToward(const State &s, const Troll &t, int targetX, int targetY) const
 {
-    const vector<Troll> &allies = (t.player == 0) ? s.trolls : s.enemyTrolls;
+    const vector<Troll *> &allies = (t.player == 0) ? s.trolls : s.enemyTrolls;
 
     auto cellOccupied = [&](int cx, int cy)
     {
-        for (const Troll &ally : allies)
-            if (ally.id != t.id && ally.x == cx && ally.y == cy)
+        for (const Troll *ally : allies)
+            if (ally->id != t.id && ally->x == cx && ally->y == cy)
                 return true;
         return false;
     };
@@ -1547,23 +1595,23 @@ float heuristic(const State &s)
 
     bool chopPhase = s.turn >= CHOPPING_PHASE_START;
 
-    for (const auto &t : s.trolls)
+    for (const Troll *t : s.trolls)
     {
         // Having a troll is always good
         myRes += 50;
 
         if (!chopPhase)
-            myRes += 0.25f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) +
-                     (1.0f + 2.0f * chopPhase) * t.carryWood;
+            myRes += 0.25f * (t->carryPlum + t->carryLemon + t->carryApple + t->carryBanana + t->carryIron) +
+                     (1.0f + 2.0f * chopPhase) * t->carryWood;
     }
-    for (const auto &t : s.enemyTrolls)
+    for (const Troll *t : s.enemyTrolls)
     {
         // Having a troll is always good
         enRes += 50;
 
         if (!chopPhase)
-            enRes += 0.25f * (t.carryPlum + t.carryLemon + t.carryApple + t.carryBanana + t.carryIron) +
-                     (1.0f + 2.0f * chopPhase) * t.carryWood;
+            enRes += 0.25f * (t->carryPlum + t->carryLemon + t->carryApple + t->carryBanana + t->carryIron) +
+                     (1.0f + 2.0f * chopPhase) * t->carryWood;
     }
 
     // Encourage balanced gathering of plum/lemon/apple/iron toward next troll training.
@@ -1911,7 +1959,7 @@ static vector<int> getBestPerTrollIndices(Node *node, bool log = false)
 
         if (log)
         {
-            Troll &troll = node->state.trolls[t];
+            Troll &troll = *node->state.trolls[t];
             cerr << "Troll " << troll.id << " bandit:";
             for (int i = 0; i < (int)stats.size(); i++)
             {
@@ -2056,8 +2104,9 @@ void parseTrolls(State &state)
     int n;
     cin >> n;
 
-    state.trolls.clear();
-    state.enemyTrolls.clear();
+    state.allTrolls.clear();
+    if (state.allTrolls.capacity() < MAX_TROLLS_TOTAL)
+        state.allTrolls.reserve(MAX_TROLLS_TOTAL);
 
     for (int i = 0; i < n; i++)
     {
@@ -2065,26 +2114,21 @@ void parseTrolls(State &state)
 
         cin >> t.id >> t.player >> t.x >> t.y >> t.movementSpeed >> t.carryCapacity >> t.harvestPower >> t.chopPower >> t.carryPlum >> t.carryLemon >> t.carryApple >> t.carryBanana >> t.carryIron >> t.carryWood;
 
-        if (t.player == 0)
+        if (t.player == 0 && state.myShack.x == -1)
         {
-            state.trolls.push_back(t);
+            state.myShack.x = t.x;
+            state.myShack.y = t.y;
+        }
+        else if (t.player != 0 && state.enemyShack.x == -1)
+        {
+            state.enemyShack.x = t.x;
+            state.enemyShack.y = t.y;
+        }
 
-            if (state.myShack.x == -1)
-            {
-                state.myShack.x = t.x;
-                state.myShack.y = t.y;
-            }
-        }
-        else
-        {
-            state.enemyTrolls.push_back(t);
-            if (state.enemyShack.x == -1)
-            {
-                state.enemyShack.x = t.x;
-                state.enemyShack.y = t.y;
-            }
-        }
+        state.allTrolls.push_back(t);
     }
+
+    state.rebuildTrollPointers();
 }
 
 // =====================================================
