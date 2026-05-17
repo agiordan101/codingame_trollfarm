@@ -71,18 +71,6 @@
 
         Fix: Closed-form for the common case (no growth interleave because cooldown > chopTurns): chopTurns = ceil(health / chopPower). Only fall back to the loop simulation when cooldown might tick to 0 during chopping.
 
-        7. vector allocations in hot paths
-        applyHarvest/applyChop: vector<vector<int>> byTree(trees.size()) allocated per call, plus budgets, active inside loops.
-        selectJointAction: admissible, untried, chosenSoFar all allocated per troll per iteration — this fires thousands of times.
-        Fix: Use thread-local/static scratch buffers and .clear() (capacity is preserved).
-
-        8. unordered_map<uint64_t, Node*> for children
-        trollfarm_v4.cpp:1395
-
-        Hash map allocations are expensive. With ≤8 trolls and small action counts per troll, the joint space is sparse but lookups are frequent.
-
-        Fix: Either keep but use robin_hood / flat hashmap, or for small node degrees use a vector<pair<key, Node*>> with linear scan (often faster up to ~16 entries).
-
         9. state copy on every node expand
         trollfarm_v4.cpp:1444
 
@@ -1701,9 +1689,11 @@ struct Node
     vector<vector<Action>> perTrollActions;        // [trollIdx][actionIdx]
     vector<vector<TrollActionStat>> perTrollStats; // [trollIdx][actionIdx]
 
-    // children[jointKey] = child node reached by applying that joint.
-    // jointKey packs each troll's chosen actionIdx into 8 bits.
-    unordered_map<uint64_t, Node *> children;
+    // Joint-action -> child mapping. jointKey packs each troll's chosen
+    // actionIdx into 8 bits. Node degree is small (at most a few dozen
+    // entries in practice), so a flat vector with linear scan beats
+    // unordered_map's hashing + heap allocations.
+    vector<pair<uint64_t, Node *>> children;
 
     int visits = 0;
     float score = 0.0f;
@@ -2026,12 +2016,19 @@ static ActionSet jointToActionSet(Node *node, const vector<int> &idx)
     return set;
 }
 
+static Node *findChild(const Node *node, uint64_t key)
+{
+    for (const auto &p : node->children)
+        if (p.first == key)
+            return p.second;
+    return nullptr;
+}
+
 // Apply the joint action and return (or create) the corresponding child node.
 Node *expand(Node *node, const vector<int> &idx, uint64_t key)
 {
-    auto it = node->children.find(key);
-    if (it != node->children.end())
-        return it->second;
+    if (Node *existing = findChild(node, key))
+        return existing;
 
     Node *child = allocNode();
     child->state = node->state;
@@ -2044,7 +2041,7 @@ Node *expand(Node *node, const vector<int> &idx, uint64_t key)
         if (!a.macroTaskFinished)
             child->base.actions.push_back(a);
 
-    node->children[key] = child;
+    node->children.emplace_back(key, child);
     return child;
 }
 
@@ -2063,8 +2060,7 @@ float mcts(Node *node, int depth = 0)
     uint64_t key;
     selectJointAction(node, idx, key);
 
-    auto it = node->children.find(key);
-    bool isNewChild = (it == node->children.end());
+    bool isNewChild = (findChild(node, key) == nullptr);
 
     Node *childNode = expand(node, idx, key);
     float childValue;
