@@ -1275,8 +1275,16 @@ private:
 
     void applyHarvest(const vector<Action> &actions)
     {
-        // Bucket harvest actions by the tree they target (same cell as the troll)
-        vector<vector<int>> byTree(trees.size());
+        // Scratch buffers: reused across calls; .clear() preserves capacity.
+        static vector<vector<int>> byTree;
+        static vector<int> budgets;
+        static vector<int> active;
+
+        if (byTree.size() < 30 || byTree.size() < trees.size())
+            byTree.resize(trees.size());
+        for (int i = 0; i < (int)trees.size(); i++)
+            byTree[i].clear();
+
         for (const Action &a : actions)
         {
             if (a.type != Action::HARVEST)
@@ -1297,7 +1305,7 @@ private:
                 continue;
 
             // Each troll may harvest up to harvestPower fruits this turn
-            vector<int> budgets;
+            budgets.clear();
             for (int id : trollIds)
                 budgets.push_back(getTrollById(id)->harvestPower);
 
@@ -1305,7 +1313,7 @@ private:
             while (tree.fruits > 0)
             {
                 // Active = trolls who still have harvest budget and carry capacity
-                vector<int> active;
+                active.clear();
                 for (int i = 0; i < (int)trollIds.size(); i++)
                 {
                     Troll *t = getTrollById(trollIds[i]);
@@ -1347,8 +1355,18 @@ private:
 
     void applyChop(const vector<Action> &actions)
     {
-        // Bucket chop actions by the tree they target (same cell as the troll)
-        vector<vector<int>> byTree(trees.size());
+        // Scratch buffers: reused across calls; .clear() preserves capacity.
+        static vector<vector<int>> byTree;
+        static vector<uint8_t> killed; // uint8_t so .clear()+resize stays cheap (no specialization quirks)
+        static vector<int> budgets;
+        static vector<int> active;
+
+        if (byTree.size() < trees.size())
+            byTree.resize(trees.size());
+        for (int i = 0; i < (int)trees.size(); i++)
+            byTree[i].clear();
+        killed.assign(trees.size(), 0);
+
         for (const Action &a : actions)
         {
             if (a.type != Action::CHOP)
@@ -1361,7 +1379,6 @@ private:
                 byTree[idx].push_back(t->id);
         }
 
-        vector<bool> killed(trees.size(), false);
         for (int idx = 0; idx < (int)trees.size(); idx++)
         {
             Tree &tree = trees[idx];
@@ -1379,13 +1396,13 @@ private:
             if (tree.health > 0)
                 continue;
 
-            killed[idx] = true;
+            killed[idx] = 1;
 
             // Tree dies: distribute tree.size wood among choppers
             int wood = tree.size;
 
             // Each chopper can collect up to its remaining carry capacity
-            vector<int> budgets;
+            budgets.clear();
             for (int id : trollIds)
                 budgets.push_back(getTrollById(id)->remainingCarry());
 
@@ -1393,7 +1410,7 @@ private:
             while (wood > 0)
             {
                 // Active = choppers who still have free carry capacity
-                vector<int> active;
+                active.clear();
                 for (int i = 0; i < (int)trollIds.size(); i++)
                     if (budgets[i] > 0)
                         active.push_back(i);
@@ -1914,14 +1931,20 @@ void initializeNode(Node *node)
 // happens only if every candidate conflicts with prior picks).
 static bool selectJointAction(Node *node, vector<int> &outIdx, uint64_t &outKey)
 {
+    // Scratch buffers: reused across calls; .clear() preserves capacity.
+    // selectJointAction fires tens of thousands of times — heap churn here was
+    // a measurable cost.
+    static vector<int> chosenSoFar;
+    static vector<int> admissible;
+    static vector<int> untried;
+
     int M = (int)node->perTrollActions.size();
     outIdx.assign(M, -1);
     outKey = 0;
 
     float logN = node->visits > 0 ? logf((float)node->visits) : 0.0f;
 
-    vector<int> chosenSoFar;
-    chosenSoFar.reserve(M);
+    chosenSoFar.clear();
 
     for (int t = 0; t < M; t++)
     {
@@ -1931,8 +1954,7 @@ static bool selectJointAction(Node *node, vector<int> &outIdx, uint64_t &outKey)
 
         // Build admissible set: actions that don't conflict with any previously
         // chosen troll's pick this iteration.
-        vector<int> admissible;
-        admissible.reserve(K);
+        admissible.clear();
         for (int i = 0; i < K; i++)
         {
             bool ok = true;
@@ -1957,7 +1979,7 @@ static bool selectJointAction(Node *node, vector<int> &outIdx, uint64_t &outKey)
                 admissible.push_back(i);
 
         // Prefer untried actions first (random tiebreak).
-        vector<int> untried;
+        untried.clear();
         for (int i : admissible)
             if (stats[i].visits == 0)
                 untried.push_back(i);
