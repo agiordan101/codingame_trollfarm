@@ -236,10 +236,37 @@ constexpr int MAX_MAP_WIDTH = 2 * MAX_MAP_HEIGHT;
 int bfs_dist_lookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH][MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
 
 static vector<Position> ironMines;
+static bool nearWaterLookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
 
 bool isCellWalkable(char c)
 {
     return c == '.';
+}
+
+void buildNearWaterLookup(int w, int h, const char g[][MAX_MAP_WIDTH])
+{
+    constexpr int dxs[4] = {1, -1, 0, 0};
+    constexpr int dys[4] = {0, 0, 1, -1};
+    for (int y = 0; y < h; y++)
+    {
+        for (int x = 0; x < w; x++)
+        {
+            bool near = false;
+            for (int k = 0; k < 4; k++)
+            {
+                int nx = x + dxs[k];
+                int ny = y + dys[k];
+                if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                    continue;
+                if (g[ny][nx] == '~')
+                {
+                    near = true;
+                    break;
+                }
+            }
+            nearWaterLookup[y][x] = near;
+        }
+    }
 }
 
 void buildBfsLookup(int w, int h, const char g[][MAX_MAP_WIDTH])
@@ -973,18 +1000,7 @@ public:
 
     bool isNearWater(int x, int y) const
     {
-        constexpr int dxs[4] = {1, -1, 0, 0};
-        constexpr int dys[4] = {0, 0, 1, -1};
-        for (int k = 0; k < 4; k++)
-        {
-            int nx = x + dxs[k];
-            int ny = y + dys[k];
-            if (nx < 0 || nx >= w || ny < 0 || ny >= h)
-                continue;
-            if (grid[ny][nx] == '~')
-                return true;
-        }
-        return false;
+        return nearWaterLookup[y][x];
     }
 
     Troll *getTrollById(int id) { return &allTrolls[id]; }
@@ -1657,10 +1673,16 @@ float heuristic(const State &s)
         top[k] = score;
     };
 
-    if (!chopPhase)
+    // Single pass over trees: contributes both the fruit-tree top-K bonus (when
+    // not in chop phase) and the chop-progress reward (when in chop phase).
+    for (const auto &tree : s.trees)
     {
-        // Bonuses for closest tree of each types
-        for (const auto &tree : s.trees)
+        int dMy = bfs_dist_lookup[s.myShack.y][s.myShack.x][tree.y][tree.x];
+        int dEn = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][tree.y][tree.x];
+        if (dMy <= 0 || dEn <= 0)
+            continue;
+
+        if (!chopPhase)
         {
             int idx = -1;
             for (int i = 0; i < NUM_FRUITS; i++)
@@ -1669,20 +1691,19 @@ float heuristic(const State &s)
                     idx = i;
                     break;
                 }
-            if (idx < 0)
-                continue;
-
-            int dMy = bfs_dist_lookup[s.myShack.y][s.myShack.x][tree.y][tree.x];
-            int dEn = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][tree.y][tree.x];
-            if (dMy <= 0 || dEn <= 0)
-                continue;
-
-            float treeScore = 40;
-            if (s.isNearWater(tree.x, tree.y))
-                treeScore *= 1.5f;
-
-            insertTopK(bestMy[idx], treeScore / (float)dMy);
-            insertTopK(bestEn[idx], treeScore / (float)dEn);
+            if (idx >= 0)
+            {
+                float treeScore = nearWaterLookup[tree.y][tree.x] ? 60.0f : 40.0f;
+                insertTopK(bestMy[idx], treeScore / (float)dMy);
+                insertTopK(bestEn[idx], treeScore / (float)dEn);
+            }
+        }
+        else
+        {
+            int maxHealth = Tree::healthFromSize(tree.type, tree.size);
+            float progressScore = (float)(maxHealth - tree.health) / (float)maxHealth;
+            myRes += progressScore / (float)dMy;
+            enRes += progressScore / (float)dEn;
         }
     }
 
@@ -1692,28 +1713,6 @@ float heuristic(const State &s)
             myRes += bestMy[i][k];
             enRes += bestEn[i][k];
         }
-
-    // Each tree carries an existence bonus (always positive while alive) plus
-    // a chop-progress reward in [0,1] = damage/maxHealth that grows as the
-    // tree nears death. Existence dominates progress, so destroying a tree
-    // for a tiny wood payout (e.g. size 1 → 1 wood) is a net loss; bigger
-    // trees still net positive once their wood is dropped at the shack.
-    float treeExistWeight = chopPhase ? 4.0f : 0;
-    for (const auto &tree : s.trees)
-    {
-        int dMy = bfs_dist_lookup[s.myShack.y][s.myShack.x][tree.y][tree.x];
-        int dEn = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][tree.y][tree.x];
-        if (dMy <= 0 || dEn <= 0)
-            continue;
-
-        int maxHealth = Tree::healthFromSize(tree.type, tree.size);
-        float progressScore = chopPhase
-                                  ? (float)(maxHealth - tree.health) / (float)maxHealth
-                                  : 0.0f;
-
-        myRes += progressScore / (float)dMy;
-        enRes += progressScore / (float)dEn;
-    }
 
     // Enemy score reliability decays with simulation depth: we don't simulate
     // opponent moves, so the further ahead we look, the less accurate enRes is.
@@ -2166,6 +2165,7 @@ int main()
 
     parseMap(w, h, state);
     buildBfsLookup(w, h, state.grid);
+    buildNearWaterLookup(w, h, state.grid);
 
     State prevState;
 
