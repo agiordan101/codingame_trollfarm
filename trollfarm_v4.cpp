@@ -534,9 +534,17 @@ public:
     vector<Troll *> trolls;
     vector<Troll *> enemyTrolls;
 
+    // Index map: treeAtCell[y][x] = index in `trees`, or -1 if no tree.
+    // Kept in sync with mutations (parse, plant, chop kills). Lets findTreeIndex
+    // be O(1) instead of an O(N) linear scan.
+    int16_t treeAtCell[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
+
     State()
     {
         allTrolls.reserve(MAX_TROLLS_TOTAL);
+        for (int y = 0; y < MAX_MAP_HEIGHT; y++)
+            for (int x = 0; x < MAX_MAP_WIDTH; x++)
+                treeAtCell[y][x] = -1;
     }
 
     State(const State &o) { *this = o; }
@@ -555,8 +563,18 @@ public:
         allTrolls = o.allTrolls;
         if (allTrolls.capacity() < MAX_TROLLS_TOTAL)
             allTrolls.reserve(MAX_TROLLS_TOTAL);
+        memcpy(treeAtCell, o.treeAtCell, sizeof(treeAtCell));
         rebuildTrollPointers();
         return *this;
+    }
+
+    void rebuildTreeIndex()
+    {
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                treeAtCell[y][x] = -1;
+        for (int i = 0; i < (int)trees.size(); i++)
+            treeAtCell[trees[i].y][trees[i].x] = (int16_t)i;
     }
 
     void rebuildTrollPointers()
@@ -1009,10 +1027,7 @@ public:
 private:
     int findTreeIndex(int x, int y) const
     {
-        for (int i = 0; i < (int)trees.size(); i++)
-            if (trees[i].x == x && trees[i].y == y)
-                return i;
-        return -1;
+        return treeAtCell[y][x];
     }
 
     void applyMove(const Action &a)
@@ -1049,7 +1064,9 @@ private:
         tree.fruits = 0;
         tree.cooldown = Tree::cooldownFromType(a.resource, isNearWater(t->x, t->y));
 
+        int tx = t->x, ty = t->y;
         trees.push_back(move(tree));
+        treeAtCell[ty][tx] = (int16_t)(trees.size() - 1);
     }
 
     void applyPick(const Action &a)
@@ -1297,9 +1314,15 @@ private:
         }
 
         // Remove killed trees (back to front to keep indices valid)
+        bool anyKilled = false;
         for (int i = (int)trees.size() - 1; i >= 0; i--)
             if (killed[i])
+            {
                 trees.erase(trees.begin() + i);
+                anyKilled = true;
+            }
+        if (anyKilled)
+            rebuildTreeIndex();
     }
 
     void updateTrees()
@@ -2096,6 +2119,7 @@ void parseTrees(State &state)
     state.trees.resize(n);
     for (auto &t : state.trees)
         cin >> t.type >> t.x >> t.y >> t.size >> t.health >> t.fruits >> t.cooldown;
+    state.rebuildTreeIndex();
 }
 
 void parseTrolls(State &state)
