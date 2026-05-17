@@ -1670,7 +1670,7 @@ float heuristic(const State &s)
     // Enemy score reliability decays with simulation depth: we don't simulate
     // opponent moves, so the further ahead we look, the less accurate enRes is.
     int turnsElapsed = max(0, s.turn - g_rootTurn);
-    enRes += turnsElapsed * 0.5;
+    enRes += turnsElapsed * 0.05;
 
     constexpr float SCALE = 1000.0f;
     if (myRes > SCALE)
