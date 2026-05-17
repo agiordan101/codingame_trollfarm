@@ -11,48 +11,24 @@
 #include <unordered_map>
 
 /*
-    Create chop until the end macro move
-    Facteur d 'agressivité en fonction de la distance avec le shack adverse
+    Macro MCTS algorithms :
 
-    Game plan :
-        - Create static BFS lookup table at first turn. Ouput move based on troll speed and BFS distance to target.
-        - At all times, if an enemy is chopping a tree and I can reach it before he finishes, do it (when at least one slot is empty)
-        - Harvest to generate Troll until turn 200 arrives
-            Only trolls stats : (2, 2, 1, 2)
-        - After turn 200, CHOP all trees
-        - Generate a map for plant. Normalize between 0 and 0.5 using best cell score as 0.5 and score=0 as 0.
-            Weight all cells based on the distance between shack. The closer shacks are, less we should plant
-            When trolls have any fruits, plant according to the probability of the cell.
-            if unplantable
-                0
-            else
-                + d to enemy shack
-                - d to my shack
-                * 1.2 if next to water
-        - When trolls count = 3 -> Plant on all cells with d<=2 ??
-        - Do NOT plant trees if shacks distance is <= 5
-
-
-    Algorithms :
-        - Faire un MCTS classique avec une heuristic.
-        - Faire un macro-MCTS en ajoutant des macro actions. Soit un séquence défini de k actions qui termine sur un état à t+k tours
-            Macro actions possibles (Sont suivis par une action primitive) :
-            - Troll X MOVE à un tree, pour ensuite CHOP tout l'arbre
-            - Troll X MOVE à un tree PLUM, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
-            - Troll X MOVE à un tree LEMON, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
-            - Troll X MOVE à un tree APPLE, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
-            - Troll X MOVE à un tree BANANA, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
-            - Troll X MOVE à une mine, pour ensuite MINE jusqu'a ce qu'il soit plein
-            - Troll X MOVE au shack allié, pour ensuite PICK un fruit
-            - Troll X MOVE au shack allié, pour ensuite DROP ce qu'il carry
-            - Troll X MOVE à une cell particuliere, pour ensuite PLANT
-            Actions primitives restantes :
-            - Train un troll avec des stats données
-
-            MacroAction :
-                - Une macro action est une séquence d'actions primitives implicite.
-                - Exemple : Troll X MOVE à un tree, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
-                - C'est un nombre de tours défini
+        MacroAction :
+            - Une macro action est une séquence d'actions primitives.
+            - Exemple : Troll X MOVE à un tree, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+            - C'est un nombre de tours défini
+                Macro actions possibles (Sont suivis par une action primitive) :
+                - Troll X MOVE à un tree, pour ensuite CHOP tout l'arbre
+                - Troll X MOVE à un tree PLUM, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+                - Troll X MOVE à un tree LEMON, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+                - Troll X MOVE à un tree APPLE, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+                - Troll X MOVE à un tree BANANA, pour ensuite HARVEST jusqu'a ce qu'il soit plein ou que l'arbre n'ait plus de fruits
+                - Troll X MOVE à une mine, pour ensuite MINE jusqu'a ce qu'il soit plein
+                - Troll X MOVE au shack allié, pour ensuite PICK un fruit
+                - Troll X MOVE au shack allié, pour ensuite DROP ce qu'il carry
+                - Troll X MOVE à une cell particuliere, pour ensuite PLANT
+                Actions primitives restantes :
+                - Train un troll avec des stats données
 
             MacroActionSet :
                 Un MacroActionSet est une liste de MacroAction, une par troll.
@@ -69,9 +45,8 @@
                         - Avantage : On prend en compte les changements de l'environnement pour tous les trolls à chaque décision
                         - Inconvénient : Plus de combinatoire : On a N^M MacroActionSet comme enfant de la Node, avec M le nombre de trolls
 
-
-
-        - Tester un HMCTS-OP avec le graph MAXQ suivant :
+    - Prochain algorithme :
+        Un HMCTS-OP avec un graph MAXQ.
 
     Engine :
         C'est pas grave que l'engine ne simule pas exactement le comportement du jeu.
@@ -79,16 +54,11 @@
             mis à part de la complexité et du temps perdu.
         Exemple : Pas besoin d'ancitiper que planter 2 arbre différents en même temps sur la même case ne résulte en rien.
         Par contre : Simuler que 2 trolls coupent le même arbre en même temps et la répartition du bois est important
-
-        L'ordre du gold path est trop souvent les actions :
-            Gold path step 1 | Actions: MOVE_AND_PLANT 0 4 3 LEMON;  | Visits=111 score=-4696.24
-            Gold path step 2 | Actions: MOVE_AND_HARVEST 0 5 1;  | Visits=5 score=-206.503
-            Gold path step 3 | Actions: MOVE_AND_CHOP 0 14 8;  | Visits=1 score=-42.793
-
-        Est ce que forcer des primitive action en step 1 est vraiment utile ?
-        Forcer des primitive action en step 1 empêche de réutiliser l'arbre entre les turns. Parce que la node 1 change tous le temps même si l'action 2 est toujours la meme macro action.
-
-
+    
+    Next steps :
+        - Create chop until the end macro move
+        - Facteur d 'agressivité en fonction de la distance avec le shack adverse ?
+        - Simuler les chops de l'adversaire pour mieux anticiper les récoltes de bois: Voler les récoltes de bois de l'adversaire
 */
 
 using namespace std;
@@ -749,64 +719,159 @@ public:
             exit(0);
         }
 
-        // Per-action turn count: macros = 1 + ceil(bfs/ms), primitives = 1.
-        // T = number of game turns to advance before at least one action finishes.
-        vector<int> turns;
-        turns.reserve(set.actions.size());
+        // Pre-check: a MOVE_AND_CHOP whose target tree is already gone finishes
+        // immediately without burning a turn. Caller will regenerate actions
+        // for those trolls on the next call.
+        bool anyFinishedEarly = false;
         for (Action &a : set.actions)
         {
+            if (a.type != Action::MOVE_AND_CHOP)
+                continue;
+            bool treeAlive = false;
+            for (const Tree &tree : trees)
+                if (tree.x == a.x && tree.y == a.y && tree.health > 0)
+                {
+                    treeAlive = true;
+                    break;
+                }
+            if (!treeAlive)
+            {
+                a.macroTaskFinished = true;
+                anyFinishedEarly = true;
+            }
+        }
+        if (anyFinishedEarly)
+            return;
+
+        // Per-action moveTurns (for arrival turn detection) and totalTurns.
+        // T = number of game turns to advance before at least one action finishes.
+        int N = (int)set.actions.size();
+        vector<int> moveTurnsArr(N, 0);
+        vector<int> totalTurnsArr(N, 1);
+        for (int i = 0; i < N; i++)
+        {
+            Action &a = set.actions[i];
             if (a.macroTaskFinished)
             {
                 cerr << "Macro action " << a.toString() << " is already finished before using it !!! " << turn << endl;
                 exit(0);
             }
-            turns.push_back(a.macroTurnCount(*this));
+            if (a.category != Action::PRIMITIVE)
+            {
+                Troll *tr = findTrollById(a.trollid);
+                if (tr && !(tr->x == a.x && tr->y == a.y))
+                {
+                    int d = bfs_dist_lookup[tr->y][tr->x][a.y][a.x];
+                    if (d >= 0)
+                        moveTurnsArr[i] = (d + tr->movementSpeed - 1) / tr->movementSpeed;
+                }
+            }
+            totalTurnsArr[i] = a.macroTurnCount(*this);
         }
-        int T = *min_element(turns.begin(), turns.end());
+        int T = *min_element(totalTurnsArr.begin(), totalTurnsArr.end());
+
+        // Helper: returns true iff the tree at (ax, ay) is still alive.
+        auto treeAliveAt = [&](int ax, int ay)
+        {
+            for (const Tree &tree : trees)
+                if (tree.x == ax && tree.y == ay && tree.health > 0)
+                    return true;
+            return false;
+        };
 
         // Turn 1: real moves via findNextPrimitiveAction (BFS-based moveToward).
+        // At-target macros also emit their terminal primitive here.
         vector<Action> primitiveActions;
-        primitiveActions.reserve(set.actions.size());
+        primitiveActions.reserve(N);
         for (Action &a : set.actions)
             primitiveActions.push_back(a.findNextPrimitiveAction(*this));
         applyActions(primitiveActions);
 
-        // If any action finished on turn 1, we're done.
+        // Post-turn-1: at-target MOVE_AND_CHOPs already emitted a chop; mark
+        // finished if the tree died from it.
+        for (int i = 0; i < N; i++)
+        {
+            Action &a = set.actions[i];
+            if (a.macroTaskFinished || a.type != Action::MOVE_AND_CHOP)
+                continue;
+            if (moveTurnsArr[i] == 0 && !treeAliveAt(a.x, a.y))
+                a.macroTaskFinished = true;
+        }
+
+        // If any action finished on turn 1, we're done (matches original).
         for (const Action &a : set.actions)
             if (a.macroTaskFinished)
                 return;
 
-        // Turn 2..T-1: just grow trees and advance turn.
-        for (int i = 0; i < T - 2; i++)
+        // Turns 2..T: keep advancing. Each turn, each unfinished macro emits a
+        // primitive based on its phase:
+        //   - in transit (tn <= moveTurns): no primitive (move-phase abstraction)
+        //   - arrival turn (tn == moveTurns + 1): teleport + emit terminal
+        //   - chop continuation (tn > moveTurns + 1, MOVE_AND_CHOP): emit chop
+        // The loop always runs exactly T-1 iterations so we advance T turns
+        // total (1 from turn-1 applyActions + T-1 from this loop). Empty
+        // primitive sets are fine: applyActions still grows trees + ticks turn.
+        for (int tn = 2; tn <= T; tn++)
         {
-            updateTrees();
-            turn++;
+            vector<Action> primitives;
+            for (int i = 0; i < N; i++)
+            {
+                Action &a = set.actions[i];
+                if (a.macroTaskFinished)
+                    continue;
+                int mt = moveTurnsArr[i];
+                if (tn == mt + 1)
+                {
+                    // Arrival turn: teleport, emit terminal. Non-chop macros
+                    // finish here; MOVE_AND_CHOP defers to tree-death check.
+                    Troll *tr = findTrollById(a.trollid);
+                    if (tr)
+                    {
+                        tr->x = a.x;
+                        tr->y = a.y;
+                    }
+                    primitives.push_back(a.terminalPrimitive());
+                    if (a.type != Action::MOVE_AND_CHOP)
+                        a.macroTaskFinished = true;
+                }
+                else if (tn > mt + 1 && a.type == Action::MOVE_AND_CHOP)
+                {
+                    primitives.push_back(Action::chop(a.trollid, a.playerid));
+                }
+                // else still in transit: no primitive this turn
+            }
+            applyActions(primitives);
+
+            // Post-turn: MOVE_AND_CHOPs that just chopped finish if tree died.
+            for (int i = 0; i < N; i++)
+            {
+                Action &a = set.actions[i];
+                if (a.macroTaskFinished || a.type != Action::MOVE_AND_CHOP)
+                    continue;
+                if (tn < moveTurnsArr[i] + 1)
+                    continue; // hadn't started chopping yet
+                if (!treeAliveAt(a.x, a.y))
+                    a.macroTaskFinished = true;
+            }
         }
 
-        // Turn T: teleport every macro troll to its target; finishing macros execute
-        // their terminal primitive. Non-finishing macros stay in `set` and will
-        // finish in 1 turn next time applyMacroActions is called (troll already at target).
-        vector<Action> finalPrimitives;
-        for (int i = 0; i < (int)set.actions.size(); i++)
+        // Optimistic teleport: any unfinished macro whose troll never reached
+        // its arrival turn within this call (mt + 1 > T) gets teleported to
+        // its target. Matches the original turn-T behavior: the next
+        // applyMacroActions call sees the troll already at-target. For
+        // MOVE_AND_CHOP this means subsequent chops happen at mt=0.
+        for (int i = 0; i < N; i++)
         {
             Action &a = set.actions[i];
-
-            // Teleport trolls
-            Troll *t = findTrollById(a.trollid);
-            if (t)
+            if (a.macroTaskFinished)
+                continue;
+            Troll *tr = findTrollById(a.trollid);
+            if (tr && !(tr->x == a.x && tr->y == a.y))
             {
-                t->x = a.x;
-                t->y = a.y;
-            }
-
-            // Execute terminal primitive for finished macro actions
-            if (turns[i] == T)
-            {
-                a.macroTaskFinished = true;
-                finalPrimitives.push_back(a.terminalPrimitive());
+                tr->x = a.x;
+                tr->y = a.y;
             }
         }
-        applyActions(finalPrimitives);
     }
 
     void applyActions(const vector<Action> &actions)
@@ -1241,9 +1306,11 @@ Action Action::findNextPrimitiveAction(const State &s)
     }
 
     // Defensive cap: a macro that hasn't reached its target after MAX_MACRO_TURNS
-    // is forced to finish. Prevents infinite loops if pathing gets permanently
-    // blocked (e.g. mutually-blocking trolls beyond moveToward's heuristic).
-    constexpr int MAX_MACRO_TURNS = 20;
+    // applyMacroActions calls is forced to finish. Prevents infinite loops if
+    // pathing gets permanently blocked (e.g. mutually-blocking trolls beyond
+    // moveToward's heuristic). Sized to accommodate a MOVE_AND_CHOP chunked
+    // 1 chop per call against a max-health tree (~20 HP) with chopPower 1.
+    constexpr int MAX_MACRO_TURNS = 40;
     if (macroStepsTaken >= MAX_MACRO_TURNS)
     {
         cerr << "Macro action " << toString() << " forced to finish after reaching turn limit of " << MAX_MACRO_TURNS << endl;
@@ -1256,6 +1323,26 @@ Action Action::findNextPrimitiveAction(const State &s)
     if (t && !(t->x == x && t->y == y))
     {
         return moveToward(s, *t, x, y);
+    }
+
+    // MOVE_AND_CHOP: keep chopping the tree until it dies. macroTaskFinished
+    // is set only once the tree is gone; otherwise we emit another chop next
+    // call (troll already at target -> macroTurnCount returns 1).
+    if (type == MOVE_AND_CHOP)
+    {
+        bool treeAlive = false;
+        for (const Tree &tree : s.trees)
+            if (tree.x == x && tree.y == y && tree.health > 0)
+            {
+                treeAlive = true;
+                break;
+            }
+        if (!treeAlive)
+        {
+            macroTaskFinished = true;
+            return *this;
+        }
+        return Action::chop(trollid, playerid);
     }
 
     // Execute terminal primitive only once arrived
@@ -1293,15 +1380,74 @@ int Action::macroTurnCount(const State &s) const
     if (!t)
         return 1;
 
-    if (t->x == x && t->y == y)
-        return 1;
+    int moveTurns = 0;
+    if (!(t->x == x && t->y == y))
+    {
+        int d = bfs_dist_lookup[t->y][t->x][y][x];
+        if (d < 0)
+            return 1;
+        moveTurns = (d + t->movementSpeed - 1) / t->movementSpeed;
+    }
 
-    int d = bfs_dist_lookup[t->y][t->x][y][x];
-    if (d < 0)
-        return 1;
+    if (type != MOVE_AND_CHOP)
+        return moveTurns + 1;
 
-    int moveTurns = (d + t->movementSpeed - 1) / t->movementSpeed;
-    return moveTurns + 1;
+    // MOVE_AND_CHOP: chopping the tree may take several turns. Simulate the
+    // tree's growth during travel and the chop/grow interleave until it dies
+    // (chop happens before grow within applyActions, matching the real order).
+    const Tree *targetTree = nullptr;
+    for (const Tree &tr : s.trees)
+        if (tr.x == x && tr.y == y)
+        {
+            targetTree = &tr;
+            break;
+        }
+    if (!targetTree)
+        return moveTurns; // tree gone, nothing to chop
+
+    if (t->chopPower <= 0)
+        return moveTurns + 1; // shouldn't happen, defensive
+
+    Tree sim = *targetTree;
+    bool nearWater = s.isNearWater(x, y);
+
+    auto growOnce = [&]()
+    {
+        if (sim.cooldown > 0)
+        {
+            sim.cooldown--;
+            return;
+        }
+        if (sim.size < 4)
+        {
+            int oldMax = Tree::healthFromSize(sim.type, sim.size);
+            int newMax = Tree::healthFromSize(sim.type, sim.size + 1);
+            sim.size++;
+            sim.health += (newMax - oldMax);
+            sim.cooldown = Tree::cooldownFromType(sim.type, nearWater);
+        }
+        else if (sim.fruits < 3)
+        {
+            sim.fruits++;
+            sim.cooldown = Tree::cooldownFromType(sim.type, nearWater);
+        }
+    };
+
+    for (int i = 0; i < moveTurns; i++)
+        growOnce();
+
+    constexpr int CHOP_CAP = 30;
+    int chopTurns = 0;
+    while (sim.health > 0 && chopTurns < CHOP_CAP)
+    {
+        sim.health -= t->chopPower;
+        chopTurns++;
+        if (sim.health <= 0)
+            break;
+        growOnce();
+    }
+
+    return moveTurns + chopTurns;
 }
 
 // =====================================================
