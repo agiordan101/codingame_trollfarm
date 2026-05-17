@@ -62,6 +62,33 @@
             - Vrai simulation des body blocks dans l'engine
         - Facteur d 'agressivité en fonction de la distance avec le shack adverse ?
         - Simuler les chops de l'adversaire pour mieux anticiper les récoltes de bois: Voler les récoltes de bois de l'adversaire
+    
+    Optimisations :
+        5. macroTurnCount for MOVE_AND_CHOP simulates chops in a loop
+        trollfarm_v4.cpp:1280-1325
+
+        Called for every action in every applyMacroActions call. The chop simulation runs until tree dies (up to 30 iterations).
+
+        Fix: Closed-form for the common case (no growth interleave because cooldown > chopTurns): chopTurns = ceil(health / chopPower). Only fall back to the loop simulation when cooldown might tick to 0 during chopping.
+
+        7. vector allocations in hot paths
+        applyHarvest/applyChop: vector<vector<int>> byTree(trees.size()) allocated per call, plus budgets, active inside loops.
+        selectJointAction: admissible, untried, chosenSoFar all allocated per troll per iteration — this fires thousands of times.
+        Fix: Use thread-local/static scratch buffers and .clear() (capacity is preserved).
+
+        8. unordered_map<uint64_t, Node*> for children
+        trollfarm_v4.cpp:1395
+
+        Hash map allocations are expensive. With ≤8 trolls and small action counts per troll, the joint space is sparse but lookups are frequent.
+
+        Fix: Either keep but use robin_hood / flat hashmap, or for small node degrees use a vector<pair<key, Node*>> with linear scan (often faster up to ~16 entries).
+
+        9. state copy on every node expand
+        trollfarm_v4.cpp:1444
+
+        child->state = node->state copies all trees + trolls + grid (the grid is 11×22 chars = 242 bytes, negligible, but trees vector copy + trolls reallocate).
+
+        Fix: Use small-vector / inline storage for trees and trolls, or pool the inner allocations.
 */
 
 using namespace std;
@@ -247,9 +274,90 @@ uint8_t nextStepMask[MAX_MAP_HEIGHT][MAX_MAP_WIDTH][MAX_MAP_HEIGHT][MAX_MAP_WIDT
 static vector<Position> ironMines;
 static bool nearWaterLookup[MAX_MAP_HEIGHT][MAX_MAP_WIDTH];
 
+// Per-player caches keyed off the fixed shack position. Initialized lazily
+// once the shacks are known (first parseTrolls). The shack never moves, so
+// these stay valid for the whole game.
+static vector<Position> shackAdjCells[2];             // walkable cells adjacent to shack (PICK/DROP target)
+static vector<Position> plantableCellsAroundShack[2]; // walkable cells with BFS dist ≤ 2 of shack
+static vector<Position> mineAdjCells;                 // walkable cells adjacent to any iron mine
+static bool shackCachesReady = false;
+
 bool isCellWalkable(char c)
 {
     return c == '.';
+}
+
+void buildMineAdjCells(int w, int h, const char g[][MAX_MAP_WIDTH])
+{
+    mineAdjCells.clear();
+    constexpr int dxs[4] = {1, -1, 0, 0};
+    constexpr int dys[4] = {0, 0, 1, -1};
+    // Dedup via a flat seen[] grid so a cell touching two mines only appears once.
+    bool seen[MAX_MAP_HEIGHT][MAX_MAP_WIDTH] = {};
+    for (const Position &mine : ironMines)
+    {
+        for (int k = 0; k < 4; k++)
+        {
+            int nx = mine.x + dxs[k];
+            int ny = mine.y + dys[k];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                continue;
+            if (!isCellWalkable(g[ny][nx]))
+                continue;
+            if (seen[ny][nx])
+                continue;
+            seen[ny][nx] = true;
+            Position p;
+            p.x = nx;
+            p.y = ny;
+            mineAdjCells.push_back(p);
+        }
+    }
+}
+
+void buildShackCaches(int w, int h, const char g[][MAX_MAP_WIDTH],
+                      int myX, int myY, int enX, int enY)
+{
+    constexpr int dxs[4] = {1, -1, 0, 0};
+    constexpr int dys[4] = {0, 0, 1, -1};
+    int shackX[2] = {myX, enX};
+    int shackY[2] = {myY, enY};
+    for (int p = 0; p < 2; p++)
+    {
+        shackAdjCells[p].clear();
+        plantableCellsAroundShack[p].clear();
+
+        // Walkable cells directly adjacent to the shack — PICK/DROP move target.
+        for (int k = 0; k < 4; k++)
+        {
+            int nx = shackX[p] + dxs[k];
+            int ny = shackY[p] + dys[k];
+            if (nx < 0 || nx >= w || ny < 0 || ny >= h)
+                continue;
+            if (!isCellWalkable(g[ny][nx]))
+                continue;
+            Position cell;
+            cell.x = nx;
+            cell.y = ny;
+            shackAdjCells[p].push_back(cell);
+        }
+
+        // Walkable cells within BFS dist ≤ 2 of the shack — plant target candidates.
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                if (!isCellWalkable(g[y][x]))
+                    continue;
+                int d = bfs_dist_lookup[shackY[p]][shackX[p]][y][x];
+                if (d < 0 || d > 2)
+                    continue;
+                Position cell;
+                cell.x = x;
+                cell.y = y;
+                plantableCellsAroundShack[p].push_back(cell);
+            }
+    }
+    shackCachesReady = true;
 }
 
 void buildNearWaterLookup(int w, int h, const char g[][MAX_MAP_WIDTH])
@@ -675,29 +783,18 @@ private:
         // TODO: When there isn't enough tree to chop, planting for immediate wood is a good idea
         if (turn < 200 && (t.carryPlum > 0 || t.carryLemon > 0 || t.carryApple > 0 || t.carryBanana > 0))
         {
-            // Can be precomputed
-            for (int y = 0; y < h; y++)
+            for (const Position &cell : plantableCellsAroundShack[t.player])
             {
-                for (int x = 0; x < w; x++)
-                {
-                    if (!isCellWalkable(grid[y][x]))
-                        continue;
-                    int dShack = bfs_dist_lookup[shack.y][shack.x][y][x];
-                    if (dShack > 2 || dShack < 0)
-                        continue;
-
-                    if (findTreeIndex(x, y) >= 0)
-                        continue;
-
-                    if (t.carryPlum > 0)
-                        actions.push_back(Action::moveAndPlant(t.id, t.player, x, y, "PLUM"));
-                    if (t.carryLemon > 0)
-                        actions.push_back(Action::moveAndPlant(t.id, t.player, x, y, "LEMON"));
-                    if (t.carryApple > 0)
-                        actions.push_back(Action::moveAndPlant(t.id, t.player, x, y, "APPLE"));
-                    if (t.carryBanana > 0)
-                        actions.push_back(Action::moveAndPlant(t.id, t.player, x, y, "BANANA"));
-                }
+                if (treeAtCell[cell.y][cell.x] >= 0)
+                    continue;
+                if (t.carryPlum > 0)
+                    actions.push_back(Action::moveAndPlant(t.id, t.player, cell.x, cell.y, "PLUM"));
+                if (t.carryLemon > 0)
+                    actions.push_back(Action::moveAndPlant(t.id, t.player, cell.x, cell.y, "LEMON"));
+                if (t.carryApple > 0)
+                    actions.push_back(Action::moveAndPlant(t.id, t.player, cell.x, cell.y, "APPLE"));
+                if (t.carryBanana > 0)
+                    actions.push_back(Action::moveAndPlant(t.id, t.player, cell.x, cell.y, "BANANA"));
             }
         }
 
@@ -707,27 +804,20 @@ private:
         bool canDrop = t.isCarrying();
         if (canPick || canDrop)
         {
-            // Can be precomputed
-            // Find the closest walkable cell adjacent to the shack, to use as MOVE destination for both PICK and DROP macro actions
-            constexpr int dxs[4] = {1, -1, 0, 0};
-            constexpr int dys[4] = {0, 0, 1, -1};
             int shackAdjX = -1, shackAdjY = -1, shackAdjDist = -1;
-            for (int k = 0; k < 4; k++)
+            for (const Position &cell : shackAdjCells[t.player])
             {
-                int nx = shack.x + dxs[k], ny = shack.y + dys[k];
-                if (nx < 0 || nx >= w || ny < 0 || ny >= h)
-                    continue;
-                if (!isCellWalkable(grid[ny][nx]))
-                    continue;
-                int d = bfs_dist_lookup[t.y][t.x][ny][nx];
+                int d = bfs_dist_lookup[t.y][t.x][cell.y][cell.x];
                 if (d >= 0 && (shackAdjDist < 0 || d < shackAdjDist))
                 {
                     shackAdjDist = d;
-                    shackAdjX = nx;
-                    shackAdjY = ny;
+                    shackAdjX = cell.x;
+                    shackAdjY = cell.y;
                 }
             }
 
+            // COuld be worth to generate the move on shack directly and adpat the engine to choose the best path
+            // If the currently choosen cell has an ally, the move is blocked ...
             if (shackAdjX >= 0)
             {
                 if (canPick)
@@ -747,33 +837,21 @@ private:
             }
         }
 
-        // MOVE_AND_MINE_ONCE: closest reachable walkable cell adjacent to closest mine
+        // MOVE_AND_MINE_ONCE: closest reachable walkable cell adjacent to any mine
         if (turn < 200 && t.chopPower > 0 && t.canCarry())
         {
-            // Can be precomputed
-            constexpr int dxs[4] = {1, -1, 0, 0};
-            constexpr int dys[4] = {0, 0, 1, -1};
             int bestDist = -1;
             int bestX = -1, bestY = -1;
-            for (const auto &mine : ironMines)
+            for (const Position &cell : mineAdjCells)
             {
-                for (int k = 0; k < 4; k++)
+                int d = bfs_dist_lookup[t.y][t.x][cell.y][cell.x];
+                if (d < 0)
+                    continue;
+                if (bestDist == -1 || d < bestDist)
                 {
-                    int nx = mine.x + dxs[k];
-                    int ny = mine.y + dys[k];
-                    if (nx < 0 || nx >= w || ny < 0 || ny >= h)
-                        continue;
-                    if (!isCellWalkable(grid[ny][nx]))
-                        continue;
-                    int d = bfs_dist_lookup[t.y][t.x][ny][nx];
-                    if (d < 0)
-                        continue;
-                    if (bestDist == -1 || d < bestDist)
-                    {
-                        bestDist = d;
-                        bestX = nx;
-                        bestY = ny;
-                    }
+                    bestDist = d;
+                    bestX = cell.x;
+                    bestY = cell.y;
                 }
             }
             if (bestX != -1)
@@ -2226,6 +2304,7 @@ int main()
     parseMap(w, h, state);
     buildBfsLookup(w, h, state.grid);
     buildNearWaterLookup(w, h, state.grid);
+    buildMineAdjCells(w, h, state.grid);
 
     State prevState;
 
@@ -2238,6 +2317,14 @@ int main()
         parseTrees(state);
         parseTrolls(state);
         state.turn = turn;
+
+        // Shack positions are only known after the first parseTrolls (shack
+        // sits where the starting troll spawns). Build the per-player caches
+        // once they're available.
+        if (!shackCachesReady && state.myShack.x >= 0 && state.enemyShack.x >= 0)
+            buildShackCaches(w, h, state.grid,
+                             state.myShack.x, state.myShack.y,
+                             state.enemyShack.x, state.enemyShack.y);
 
         vector<Action> actions = runMCTS(state);
 
