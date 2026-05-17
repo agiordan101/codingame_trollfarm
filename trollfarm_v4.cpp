@@ -1596,12 +1596,30 @@ float heuristic(const State &s)
         enRes += 40.0f * enTrainReady * trainPhaseWeight;
     }
 
-    // Each type of fruit produce a bonus if at least one tree is 3-cells near the shack
+    // Each type of fruit produces a bonus from its two closest trees to each shack.
     // Banana is ignored because it's not used for training. It should be chopped for wood
     constexpr int NUM_FRUITS = 3;
+    constexpr int TOP_K = 2;
     const string fruitTypes[NUM_FRUITS] = {"PLUM", "LEMON", "APPLE"};
-    float bestMy[NUM_FRUITS] = {0.0f, 0.0f, 0.0f};
-    float bestEn[NUM_FRUITS] = {0.0f, 0.0f, 0.0f};
+    float bestMy[NUM_FRUITS][TOP_K] = {};
+    float bestEn[NUM_FRUITS][TOP_K] = {};
+
+    float treePhaseWeight = 1;
+    if (TRAIN_PHASE_START_DECAY < s.turn && s.turn < TRAIN_PHASE_END)
+        treePhaseWeight = mapRange(s.turn, TRAIN_PHASE_START_DECAY, TRAIN_PHASE_END, 1.0f, 0.0f);
+
+    auto insertTopK = [](float (&top)[TOP_K], float score)
+    {
+        if (score <= top[TOP_K - 1])
+            return;
+        int k = TOP_K - 1;
+        while (k > 0 && score > top[k - 1])
+        {
+            top[k] = top[k - 1];
+            k--;
+        }
+        top[k] = score;
+    };
 
     for (const auto &tree : s.trees)
     {
@@ -1623,29 +1641,51 @@ float heuristic(const State &s)
         float treeScore = 40;
         if (s.isNearWater(tree.x, tree.y))
             treeScore *= 1.5f;
+        treeScore *= treePhaseWeight;
 
-        float treePhaseWeight = 1;
-        if (TRAIN_PHASE_START_DECAY < s.turn && s.turn < TRAIN_PHASE_END)
-            treePhaseWeight = mapRange(s.turn, TRAIN_PHASE_START_DECAY, TRAIN_PHASE_END, 1.0f, 0.0f);
-
-        if (treeScore / (float)dMy > bestMy[idx])
-            bestMy[idx] = treePhaseWeight * treeScore / (float)dMy;
-        if (treeScore / (float)dEn > bestEn[idx])
-            bestEn[idx] = treePhaseWeight * treeScore / (float)dEn;
+        insertTopK(bestMy[idx], treeScore / (float)dMy);
+        insertTopK(bestEn[idx], treeScore / (float)dEn);
     }
 
     for (int i = 0; i < NUM_FRUITS; i++)
+        for (int k = 0; k < TOP_K; k++)
+        {
+            myRes += bestMy[i][k];
+            enRes += bestEn[i][k];
+        }
+
+    // Each tree carries an existence bonus (always positive while alive) plus
+    // a chop-progress reward in [0,1] = damage/maxHealth that grows as the
+    // tree nears death. Existence dominates progress, so destroying a tree
+    // for a tiny wood payout (e.g. size 1 → 1 wood) is a net loss; bigger
+    // trees still net positive once their wood is dropped at the shack.
+    float treeExistWeight = 4.0f * (1 - chopPhase);
+    for (const auto &tree : s.trees)
     {
-        myRes += bestMy[i];
-        enRes += bestEn[i];
+        int dMy = bfs_dist_lookup[s.myShack.y][s.myShack.x][tree.y][tree.x];
+        int dEn = bfs_dist_lookup[s.enemyShack.y][s.enemyShack.x][tree.y][tree.x];
+        if (dMy <= 0 || dEn <= 0)
+            continue;
+
+        int maxHealth = Tree::healthFromSize(tree.type, tree.size);
+        float progress = maxHealth > 0
+                             ? (float)(maxHealth - tree.health) / (float)maxHealth
+                             : 0.0f;
+
+        float treeScore = treeExistWeight + chopPhase * progress;
+        myRes += treeScore / (float)dMy;
+        enRes += treeScore / (float)dEn;
     }
 
     // Enemy score reliability decays with simulation depth: we don't simulate
     // opponent moves, so the further ahead we look, the less accurate enRes is.
-    // int turnsElapsed = max(0, s.turn - g_rootTurn);
-    // enRes += turnsElapsed * 0.1;
+    int turnsElapsed = max(0, s.turn - g_rootTurn);
+    enRes += turnsElapsed * 0.5;
 
-    constexpr float SCALE = 500.0f;
+    constexpr float SCALE = 1000.0f;
+    if (myRes > SCALE)
+        cerr << "Warning: myRes " << myRes << " exceeds heuristic scale of " << SCALE << endl;
+
     return max(-1.0f, min(1.0f, (myRes - enRes) / SCALE));
 }
 
